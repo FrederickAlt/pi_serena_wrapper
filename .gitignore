@@ -1,0 +1,5 @@
+.venv/
+.serena-data/
+.serena-projects/
+__pycache__/
+*.pyc
