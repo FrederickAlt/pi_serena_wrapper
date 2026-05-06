@@ -5,6 +5,9 @@ RUN apt-get update && apt-get install -y \
   git \
   curl \
   jq \
+  python3 \
+  python3-pip \
+  python3-venv \
   && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI
@@ -22,6 +25,15 @@ RUN usermod -d /home/agent -m -l agent node
 
 # Install pi coding agent (run as root before USER agent)
 RUN npm install -g @mariozechner/pi-coding-agent
+
+# Build the Python test environment into the image. Build with repo root as
+# context: `npx sandcastle docker build-image --dockerfile .sandcastle/Dockerfile`.
+COPY requirements.txt /tmp/requirements.txt
+RUN python3 -m venv /opt/venv \
+  && /opt/venv/bin/pip install --upgrade pip \
+  && /opt/venv/bin/pip install -r /tmp/requirements.txt
+
+ENV PATH="/opt/venv/bin:$PATH"
 
 USER agent
 

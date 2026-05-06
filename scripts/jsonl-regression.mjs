@@ -14,6 +14,7 @@ const expectedTools = [
   "find_symbol",
   "find_referencing_symbols",
   "find_declaration",
+  "find_type_definition",
   "find_implementations",
   "rename_symbol",
 ];
@@ -65,6 +66,7 @@ export function makeGreeting(name: string): string {
 
 export function useGreeting(): string {
   const greeter = new Greeter();
+  const namedGreeter: Greeter = greeter;
   return greeter.greet("World") + makeGreeting("Serena");
 }
 `);
@@ -86,11 +88,31 @@ export const renamedValue = renameMe("  value  ");
 `);
 }
 
+async function writePythonFixture() {
+  await mkdir(path.join(fixtureRoot, "py"), { recursive: true });
+  await writeFile(path.join(fixtureRoot, "py", "test.py"), `from typing import Protocol
+
+class MyInterface(Protocol):
+    def foo(self) -> str:
+        ...
+
+class MyRenamed:
+    def foo(self) -> str:
+        return "ok"
+
+obj = MyRenamed()
+obj.foo()
+`);
+}
+
 function startBridge() {
+  stdout = "";
+  stderr = "";
+  pending.clear();
   const python = path.join(packageRoot, ".venv", "bin", "python");
   const script = path.join(packageRoot, "bridge", "serena_pi_bridge.py");
   if (!existsSync(python)) {
-    throw new Error(`Missing Python environment. Run: cd ${packageRoot} && python3 -m venv .venv && .venv/bin/pip install -e vendor/serena`);
+    throw new Error(`Missing Python environment. Run: cd ${packageRoot} && python3 -m venv .venv && .venv/bin/pip install --upgrade serena-agent`);
   }
   proc = spawn(python, [script], {
     cwd: packageRoot,
@@ -120,10 +142,27 @@ function startBridge() {
     const error = new Error(`Bridge exited (${code ?? signal}).\n${stderr}`);
     for (const request of pending.values()) {
       clearTimeout(request.timer);
-      request.reject(error);
+      if (code === 0) {
+        request.resolve(undefined);
+      } else {
+        request.reject(error);
+      }
     }
     pending.clear();
   });
+}
+
+async function stopBridge() {
+  if (!proc || proc.killed) return;
+  try {
+    await request("shutdown", {}, 5000);
+  } catch (error) {
+    if (!String(error.message).includes("Bridge exited (0)")) {
+      throw error;
+    }
+  } finally {
+    proc = undefined;
+  }
 }
 
 function handleLine(line) {
@@ -170,6 +209,7 @@ async function expectUnknownTool(tool) {
 
 async function run() {
   await writeFixture();
+  await writePythonFixture();
   await rm(failedToolLog, { force: true });
   startBridge();
 
@@ -228,6 +268,12 @@ async function run() {
   }));
   assert(declarationByOccurrence.includes("src/index.ts") && declarationByOccurrence.includes("makeGreeting"), declarationByOccurrence);
 
+  const typeDefinition = stringify(await request("call_tool", {
+    tool: "find_type_definition",
+    args: { relative_path: "src/usage.ts", code_snippet: "namedGreeter: Greeter", symbol_text: "namedGreeter", include_body: true },
+  }));
+  assert(typeDefinition.includes("Greeter") && typeDefinition.includes("src/index.ts"), typeDefinition);
+
   const implementations = stringify(await request("call_tool", {
     tool: "find_implementations",
     args: { relative_path: "src/index.ts", name_path: "Runner/run", include_body: true },
@@ -242,7 +288,24 @@ async function run() {
   assert(rename.includes("renamedBySerena") || renamedTarget.includes("renamedBySerena"), rename);
   assert(renamedTarget.includes("renamedBySerena") && !renamedTarget.includes("renameMe"), renamedTarget);
 
-  await request("shutdown", {}, 5000);
+  await stopBridge();
+
+  startBridge();
+  await request("init", { cwd: path.join(fixtureRoot, "py") });
+  const unsupportedImplementations = stringify(await request("call_tool", {
+    tool: "find_implementations",
+    args: { relative_path: "test.py", name_path: "MyInterface" },
+  }));
+  assert(unsupportedImplementations.includes("not supported by the active language server"), unsupportedImplementations);
+  assert(!unsupportedImplementations.includes("Traceback"), unsupportedImplementations);
+
+  const finalFailureLog = await readFile(failedToolLog, "utf8");
+  const finalFailureEntries = finalFailureLog.trim().split("\n").map((line) => JSON.parse(line));
+  assert(finalFailureEntries.length === 2, `Expected two failed tool log entries, got ${finalFailureEntries.length}: ${finalFailureLog}`);
+  assert(finalFailureEntries[1].tool === "find_implementations", JSON.stringify(finalFailureEntries[1]));
+  assert(finalFailureEntries[1].failure_kind === "error_result", JSON.stringify(finalFailureEntries[1]));
+
+  await stopBridge();
   console.log(`PASS jsonl regression fixture: ${fixtureRoot}`);
 }
 

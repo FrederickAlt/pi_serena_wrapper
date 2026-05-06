@@ -18,7 +18,7 @@ function packageRoot(): string {
 }
 
 function setupCommand(root: string): string {
-  return `cd ${root} && python3 -m venv .venv && .venv/bin/pip install -e vendor/serena`;
+  return `cd ${root} && python3 -m venv .venv && .venv/bin/pip install --upgrade serena-agent`;
 }
 
 export class SerenaBridgeClient {

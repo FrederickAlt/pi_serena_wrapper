@@ -4,12 +4,13 @@ Standalone pi package exposing a small Serena-backed symbolic LSP tool set.
 
 ## Tools
 
-V1 exposes six tools:
+V1 exposes seven tools:
 
 - `get_symbols_overview`
 - `find_symbol`
 - `find_referencing_symbols`
 - `find_declaration`
+- `find_type_definition`
 - `find_implementations`
 - `rename_symbol`
 
@@ -22,8 +23,17 @@ Create the package-local Python environment:
 ```sh
 cd /home/frederick/projects/AI/pi_extensions/lsp/pi-serena-lsp
 python3 -m venv .venv
-.venv/bin/pip install -e vendor/serena
+.venv/bin/pip install --upgrade serena-agent
 ```
+
+Equivalent requirements-file setup:
+
+```sh
+.venv/bin/pip install -r requirements.txt
+```
+
+The bridge imports Serena from the package-local Python environment. It does not
+load Serena from a local source checkout or `vendor/serena`.
 
 Language server prerequisites are the responsibility of the user/system environment. The bridge does not install language servers, edit shell startup files, or modify `PATH`.
 
@@ -55,24 +65,13 @@ The script creates a temporary TypeScript fixture, verifies the six-tool public 
 
 ## Failed Tool Log
 
-Failed calls to the six Serena tools are appended as JSONL here:
+Failed calls to the seven Serena tools are appended as JSONL here:
 
 ```text
 .serena-data/failed-tool-calls.jsonl
 ```
 
-The logger records only this package's Serena tool calls. It does not record built-in pi tools such as `bash`, `read`, `edit`, or user shell commands. Each entry includes timestamp, project cwd, tool name, arguments, failure kind, and error message.
-
-## Vendor Sync
-
-Update the vendored Serena tree from a local Serena checkout:
-
-```sh
-cd /home/frederick/projects/AI/pi_extensions/lsp/pi-serena-lsp
-node scripts/update-serena-vendor.ts /path/to/serena --test
-```
-
-The sync script copies the required source trees, preserves the license/readme/pyproject files, writes `vendor/serena/UPSTREAM.json`, verifies the expected vendored paths, and runs the JSONL regression when `--test` is provided.
+The logger records only this package's Serena tool calls. It does not record built-in pi tools such as `bash`, `read`, `edit`, or user shell commands. Each entry includes timestamp, project cwd, tool name, arguments, failure kind, and error message. Unsupported language-server capabilities, such as `find_implementations` on a server that does not support `textDocument/implementation`, are logged as unsuccessful extension tool calls.
 
 ## Result Shapes
 

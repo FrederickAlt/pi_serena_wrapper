@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+from importlib import import_module
+from importlib.metadata import PackageNotFoundError, version
 import os
 import re
 import sys
@@ -14,14 +16,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-VENDOR_SRC = PACKAGE_ROOT / "vendor" / "serena" / "src"
 SERENA_HOME = PACKAGE_ROOT / ".serena-data"
 PROJECT_DATA_ROOT = PACKAGE_ROOT / ".serena-projects"
 FAILED_TOOL_LOG = SERENA_HOME / "failed-tool-calls.jsonl"
 
 os.environ.setdefault("SERENA_HOME", str(SERENA_HOME))
 os.environ.setdefault("SERENA_USAGE_REPORTING", "false")
-sys.path.insert(0, str(VENDOR_SRC))
 
 NATIVE_TOOL_NAMES = {
     "get_symbols_overview",
@@ -35,6 +35,7 @@ EXPOSED_TOOL_NAMES = [
     "find_symbol",
     "find_referencing_symbols",
     "find_declaration",
+    "find_type_definition",
     "find_implementations",
     "rename_symbol",
 ]
@@ -47,12 +48,16 @@ class Bridge:
 
     def init(self, cwd: str) -> dict[str, Any]:
         try:
-            from serena.agent import SerenaAgent
-            from serena.config.serena_config import LanguageBackend, SerenaConfig
+            serena_version = self._validate_serena_install()
+            agent_module = import_module("serena.agent")
+            config_module = import_module("serena.config.serena_config")
+            SerenaAgent = agent_module.SerenaAgent
+            LanguageBackend = config_module.LanguageBackend
+            SerenaConfig = config_module.SerenaConfig
         except Exception as exc:
             raise RuntimeError(
-                "Could not import Serena. Run: "
-                f"cd {PACKAGE_ROOT} && python3 -m venv .venv && .venv/bin/pip install -e vendor/serena"
+                "Could not import a compatible pip-installed Serena package. Run: "
+                f"cd {PACKAGE_ROOT} && python3 -m venv .venv && .venv/bin/pip install --upgrade serena-agent"
             ) from exc
 
         project_root = str(Path(cwd).resolve())
@@ -71,7 +76,36 @@ class Bridge:
         )
         self.agent = SerenaAgent(project=project_root, serena_config=config)
         self.cwd = project_root
-        return {"cwd": project_root, "tools": EXPOSED_TOOL_NAMES}
+        return {"cwd": project_root, "tools": EXPOSED_TOOL_NAMES, "serena_agent_version": serena_version}
+
+    @staticmethod
+    def _validate_serena_install() -> str:
+        try:
+            serena_version = version("serena-agent")
+        except PackageNotFoundError as exc:
+            raise RuntimeError("Python distribution serena-agent is not installed.") from exc
+
+        required_members = {
+            "serena.agent": ("SerenaAgent",),
+            "serena.config.serena_config": ("LanguageBackend", "SerenaConfig"),
+            "serena.symbol": ("LanguageServerSymbolRetriever",),
+            "solidlsp": (),
+            "interprompt": (),
+        }
+        for module_name, members in required_members.items():
+            try:
+                module = import_module(module_name)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Installed serena-agent {serena_version} is incompatible: cannot import {module_name}."
+                ) from exc
+            for member in members:
+                if not hasattr(module, member):
+                    raise RuntimeError(
+                        f"Installed serena-agent {serena_version} is incompatible: {module_name}.{member} is missing."
+                    )
+
+        return serena_version
 
     @staticmethod
     def _project_data_path(project_root: str) -> Path:
@@ -91,6 +125,8 @@ class Bridge:
                 result = self._agent().get_tool_by_name(tool).apply_ex(**args)
             elif tool == "find_declaration":
                 result = self._run_agent_task(lambda: self.find_declaration(**args), tool)
+            elif tool == "find_type_definition":
+                result = self._run_agent_task(lambda: self.find_type_definition(**args), tool)
             elif tool == "find_implementations":
                 result = self._run_agent_task(lambda: self.find_implementations(**args), tool)
             else:
@@ -143,6 +179,34 @@ class Bridge:
             return self._json(locations)
         return self._json(symbol)
 
+    def find_type_definition(
+        self,
+        relative_path: str,
+        regex: str | None = None,
+        code_snippet: str | None = None,
+        symbol_text: str | None = None,
+        occurrence_index: int | None = None,
+        line: int | None = None,
+        column: int | None = None,
+        include_body: bool = False,
+    ) -> str:
+        retriever = self._symbol_retriever()
+        line, column = self._resolve_position(
+            relative_path,
+            regex=regex,
+            code_snippet=code_snippet,
+            symbol_text=symbol_text,
+            occurrence_index=occurrence_index,
+            line=line,
+            column=column,
+        )
+        lang_server = retriever.get_language_server(relative_path)
+        locations = self._request_type_definition_locations(lang_server, relative_path, line, column)
+        symbols = self._symbols_for_locations(lang_server, locations, include_body=include_body)
+        if symbols:
+            return self._json(symbols)
+        return self._json(locations)
+
     def find_implementations(
         self,
         relative_path: str,
@@ -162,10 +226,78 @@ class Bridge:
             raise ValueError("find_implementations requires name_path or line and column.")
 
         lang_server = retriever.get_language_server(relative_path)
-        symbols = lang_server.request_implementing_symbols(relative_path, line, column, include_body=include_body)
+        try:
+            symbols = lang_server.request_implementing_symbols(relative_path, line, column, include_body=include_body)
+        except Exception as exc:
+            if self._is_unsupported_lsp_method(exc, "textDocument/implementation"):
+                return (
+                    "Error: find_implementations is not supported by the active language server "
+                    f"for {relative_path}. The language server does not support textDocument/implementation."
+                )
+            raise
         if not symbols:
             return self._json(lang_server.request_implementation(relative_path, line, column))
         return self._json(symbols)
+
+    @staticmethod
+    def _request_type_definition_locations(lang_server: Any, relative_path: str, line: int, column: int) -> list[Any]:
+        if not lang_server.server_started:
+            raise RuntimeError("Language Server not started")
+
+        request = lang_server.DefinitionLocationRequest(
+            lang_server,
+            relative_path,
+            line,
+            column,
+            request_name="request_type_definition",
+        )
+        with lang_server.open_file(relative_path):
+            lang_server._wait_for_cross_file_references_if_needed()
+            response = lang_server.server.send.type_definition(
+                lang_server._create_text_document_position_params(relative_path, line, column)
+            )
+        return request.normalize_response(response)
+
+    @staticmethod
+    def _symbols_for_locations(lang_server: Any, locations: list[Any], include_body: bool) -> list[Any]:
+        symbols = []
+        seen: set[tuple[str, int, int, int]] = set()
+        for location in locations:
+            relative_path = location.get("relativePath")
+            location_range = location.get("range")
+            if relative_path is None or location_range is None:
+                continue
+            start = location_range["start"]
+            symbol = lang_server._request_symbol_at_location(
+                relative_path,
+                start["line"],
+                start["character"],
+                include_body=include_body,
+                body_factory=None,
+            )
+            if symbol is None or "location" not in symbol:
+                continue
+            symbol_location = symbol["location"]
+            symbol_key = (
+                str(symbol_location["relativePath"]),
+                symbol_location["range"]["start"]["line"],
+                symbol_location["range"]["start"]["character"],
+                int(symbol["kind"]),
+            )
+            if symbol_key in seen:
+                continue
+            seen.add(symbol_key)
+            symbols.append(symbol)
+        return symbols
+
+    @staticmethod
+    def _is_unsupported_lsp_method(error: Exception, method: str) -> bool:
+        text = f"{error}"
+        cause = getattr(error, "__cause__", None)
+        while cause is not None:
+            text += f"\n{cause}"
+            cause = getattr(cause, "__cause__", None)
+        return method in text and ("Unhandled method" in text or "-32601" in text)
 
     def _resolve_position(
         self,
