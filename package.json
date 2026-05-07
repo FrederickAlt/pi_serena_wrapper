@@ -1,8 +1,15 @@
 {
-  "name": "pi-serena-lsp",
+  "name": "@pi-ext/serena-lsp",
   "version": "0.1.0",
+  "description": "Serena-backed symbolic LSP tools for pi-coding-agent",
   "type": "module",
   "private": true,
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "serena",
+    "lsp"
+  ],
   "pi": {
     "extensions": [
       "./src/extension.ts"
@@ -15,6 +22,9 @@
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.41"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.73.0"
   },
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "^0.73.0",

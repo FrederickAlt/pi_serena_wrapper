@@ -51,6 +51,13 @@ function errorOutput(error: unknown): string {
   return String(error);
 }
 
+function shouldRetryPythonSetup(error: unknown): boolean {
+  const text = errorOutput(error);
+  return text.includes("Could not import a compatible pip-installed Serena package")
+    || text.includes("Python distribution serena-agent is not installed.")
+    || text.includes("serena-agent") && text.includes("incompatible");
+}
+
 async function runSetupCommand(command: string, args: string[], cwd: string): Promise<void> {
   try {
     await execFileAsync(command, args, { cwd, maxBuffer: 10 * 1024 * 1024 });
@@ -97,6 +104,9 @@ export class SerenaBridgeClient {
     try {
       await this.request("init", { cwd }, signal);
     } catch (error) {
+      if (!shouldRetryPythonSetup(error)) {
+        throw error;
+      }
       await this.shutdown();
       await this.ensurePython({ reinstall: true });
       this.start();
