@@ -190,7 +190,9 @@ export class SerenaBridgeClient {
       const timer = setTimeout(() => {
         cleanupAbort();
         this.pending.delete(id);
-        reject(new Error(`Timed out waiting for Serena bridge method ${method}. Stderr:\n${this.stderr}`));
+        const suffix = this.stderr ? ` Stderr:\n${this.stderr}` : "";
+        reject(new Error(`Timed out waiting for Serena bridge method ${method}.${suffix}`));
+        this.restartAfterTimeout();
       }, timeoutMs);
       const onAbort = () => {
         clearTimeout(timer);
@@ -213,6 +215,13 @@ export class SerenaBridgeClient {
       signal?.addEventListener("abort", onAbort, { once: true });
       proc.stdin.write(`${JSON.stringify(payload)}\n`);
     });
+  }
+
+  private restartAfterTimeout(): void {
+    this.initializedFor = undefined;
+    if (this.proc && !this.proc.killed) {
+      this.proc.kill();
+    }
   }
 
   private onStdout(chunk: string): void {
