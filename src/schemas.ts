@@ -30,9 +30,21 @@ const SourceOccurrenceLookup = {
   occurrence_index: Type.Optional(Type.Number({
     description: "0-based occurrence to use when regex or code_snippet matches multiple locations. Prefer making code_snippet unique first.",
   })),
-  line: Type.Optional(Type.Number({ description: "0-based line for direct LSP lookup." })),
-  column: Type.Optional(Type.Number({ description: "0-based column for direct LSP lookup." })),
   include_body: Type.Optional(Type.Boolean({ description: "Include the resolved symbol body when available." })),
+} as const;
+
+const NamePathOrSourceOccurrence = {
+  relative_path: RelativePath,
+  name_path: Type.Optional(NamePath),
+  code_snippet: Type.Optional(Type.String({
+    description: "Exact source code snippet containing the symbol occurrence to resolve. Prefer enough surrounding code to make it unique in the file.",
+  })),
+  symbol_text: Type.Optional(Type.String({
+    description: "Exact symbol text inside code_snippet where the LSP cursor should be placed.",
+  })),
+  occurrence_index: Type.Optional(Type.Number({
+    description: "0-based occurrence to use when code_snippet matches multiple locations. Prefer making code_snippet unique first.",
+  })),
 } as const;
 
 export const toolSchemas = {
@@ -56,8 +68,7 @@ export const toolSchemas = {
   }),
 
   find_referencing_symbols: Type.Object({
-    name_path: NamePath,
-    relative_path: RelativePath,
+    ...NamePathOrSourceOccurrence,
     include_kinds: KindList,
     exclude_kinds: KindList,
     max_answer_chars: MaxAnswerChars,
@@ -73,16 +84,12 @@ export const toolSchemas = {
   }),
 
   find_implementations: Type.Object({
-    relative_path: RelativePath,
-    name_path: Type.Optional(NamePath),
-    line: Type.Optional(Type.Number({ description: "0-based line for direct LSP lookup." })),
-    column: Type.Optional(Type.Number({ description: "0-based column for direct LSP lookup." })),
+    ...NamePathOrSourceOccurrence,
     include_body: Type.Optional(Type.Boolean({ description: "Include implementation bodies when available." })),
   }),
 
   rename_symbol: Type.Object({
-    name_path: NamePath,
-    relative_path: RelativePath,
+    ...NamePathOrSourceOccurrence,
     new_name: Type.String({ description: "New symbol name. The language server may reject rename if the workspace has errors." }),
   }),
 } as const;

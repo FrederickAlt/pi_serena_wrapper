@@ -26,14 +26,8 @@ RUN usermod -d /home/agent -m -l agent node
 # Install pi coding agent (run as root before USER agent)
 RUN npm install -g @mariozechner/pi-coding-agent
 
-# Build the Python test environment into the image. Build with repo root as
-# context: `npx sandcastle docker build-image --dockerfile .sandcastle/Dockerfile`.
-COPY requirements.txt /tmp/requirements.txt
-RUN python3 -m venv /opt/venv \
-  && /opt/venv/bin/pip install --upgrade pip \
-  && /opt/venv/bin/pip install -r /tmp/requirements.txt
-
-ENV PATH="/opt/venv/bin:$PATH"
+COPY .sandcastle/entrypoint.sh /usr/local/bin/pi-serena-lsp-entrypoint
+RUN chmod +x /usr/local/bin/pi-serena-lsp-entrypoint
 
 USER agent
 
@@ -42,4 +36,4 @@ WORKDIR /home/agent
 # In worktree sandbox mode, Sandcastle bind-mounts the git worktree at /home/agent/workspace
 # and overrides the working directory to /home/agent/workspace at container start.
 # Structure your Dockerfile so that /home/agent/workspace can serve as the project root.
-ENTRYPOINT ["sleep", "infinity"]
+ENTRYPOINT ["/usr/local/bin/pi-serena-lsp-entrypoint"]

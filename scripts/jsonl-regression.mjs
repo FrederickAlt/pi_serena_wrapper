@@ -86,6 +86,14 @@ export class ConcreteRunner implements Runner {
 
 export const renamedValue = renameMe("  value  ");
 `);
+  await writeFile(path.join(fixtureRoot, "src", "ambiguous-rename.ts"), `export function first(signal: string): string {
+  return signal.trim();
+}
+
+export function second(signal: string): string {
+  return signal.toUpperCase();
+}
+`);
 }
 
 async function writePythonFixture() {
@@ -239,6 +247,12 @@ async function run() {
   }));
   assert(references.includes("src/usage.ts") || references.includes("useGreeting"), references);
 
+  const referencesBySnippet = stringify(await request("call_tool", {
+    tool: "find_referencing_symbols",
+    args: { relative_path: "src/index.ts", code_snippet: "class Greeter", symbol_text: "Greeter" },
+  }));
+  assert(referencesBySnippet.includes("src/usage.ts") || referencesBySnippet.includes("makeGreeting"), referencesBySnippet);
+
   const declaration = stringify(await request("call_tool", {
     tool: "find_declaration",
     args: { relative_path: "src/usage.ts", code_snippet: '.greet("World")', symbol_text: "greet", include_body: true },
@@ -280,13 +294,30 @@ async function run() {
   }));
   assert(implementations.includes("ConcreteRunner") || implementations.includes("src/implementation.ts"), implementations);
 
+  const implementationsBySnippet = stringify(await request("call_tool", {
+    tool: "find_implementations",
+    args: { relative_path: "src/index.ts", code_snippet: "run(input: string): string;", symbol_text: "run", include_body: true },
+  }));
+  assert(implementationsBySnippet.includes("ConcreteRunner") || implementationsBySnippet.includes("src/implementation.ts"), implementationsBySnippet);
+
   const rename = stringify(await request("call_tool", {
     tool: "rename_symbol",
-    args: { relative_path: "src/rename-target.ts", name_path: "renameMe", new_name: "renamedBySerena" },
+    args: { relative_path: "src/rename-target.ts", code_snippet: "function renameMe(value: string)", symbol_text: "renameMe", new_name: "renamedBySerena" },
   }));
   const renamedTarget = await readFile(path.join(fixtureRoot, "src", "rename-target.ts"), "utf8");
   assert(rename.includes("renamedBySerena") || renamedTarget.includes("renamedBySerena"), rename);
   assert(renamedTarget.includes("renamedBySerena") && !renamedTarget.includes("renameMe"), renamedTarget);
+
+  const ambiguousRename = stringify(await request("call_tool", {
+    tool: "rename_symbol",
+    args: { relative_path: "src/ambiguous-rename.ts", code_snippet: "function first(signal: string)", symbol_text: "signal", new_name: "firstSignal" },
+  }));
+  const ambiguousRenamed = await readFile(path.join(fixtureRoot, "src", "ambiguous-rename.ts"), "utf8");
+  assert(ambiguousRename.includes("firstSignal") || ambiguousRenamed.includes("firstSignal"), ambiguousRename);
+  assert(ambiguousRenamed.includes("first(firstSignal: string)"), ambiguousRenamed);
+  assert(ambiguousRenamed.includes("return firstSignal.trim();"), ambiguousRenamed);
+  assert(ambiguousRenamed.includes("second(signal: string)"), ambiguousRenamed);
+  assert(ambiguousRenamed.includes("return signal.toUpperCase();"), ambiguousRenamed);
 
   await stopBridge();
 

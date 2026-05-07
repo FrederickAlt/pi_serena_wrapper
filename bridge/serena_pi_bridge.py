@@ -26,14 +26,11 @@ os.environ.setdefault("SERENA_USAGE_REPORTING", "false")
 NATIVE_TOOL_NAMES = {
     "get_symbols_overview",
     "find_symbol",
-    "find_referencing_symbols",
-    "rename_symbol",
 }
 
 NATIVE_UNTRUNCATED_READ_TOOL_NAMES = {
     "get_symbols_overview",
     "find_symbol",
-    "find_referencing_symbols",
 }
 
 EXPOSED_TOOL_NAMES = [
@@ -137,6 +134,10 @@ class Bridge:
                 result = self._run_agent_task(lambda: self.find_type_definition(**args), tool)
             elif tool == "find_implementations":
                 result = self._run_agent_task(lambda: self.find_implementations(**args), tool)
+            elif tool == "find_referencing_symbols":
+                result = self._run_agent_task(lambda: self.find_referencing_symbols(**args), tool)
+            elif tool == "rename_symbol":
+                result = self._run_agent_task(lambda: self.rename_symbol(**args), tool)
             else:
                 raise AssertionError(f"Unhandled tool: {tool}")
         except Exception as exc:
@@ -162,8 +163,6 @@ class Bridge:
         symbol_text: str | None = None,
         occurrence_index: int | None = None,
         name_path: str | None = None,
-        line: int | None = None,
-        column: int | None = None,
         include_body: bool = False,
     ) -> str:
         retriever = self._symbol_retriever()
@@ -177,8 +176,6 @@ class Bridge:
             code_snippet=code_snippet,
             symbol_text=symbol_text,
             occurrence_index=occurrence_index,
-            line=line,
-            column=column,
         )
         lang_server = retriever.get_language_server(relative_path)
         symbol = lang_server.request_defining_symbol(relative_path, line, column, include_body=include_body)
@@ -187,6 +184,45 @@ class Bridge:
             return self._json(locations)
         return self._json(symbol)
 
+    def find_referencing_symbols(
+        self,
+        relative_path: str,
+        name_path: str | None = None,
+        code_snippet: str | None = None,
+        symbol_text: str | None = None,
+        occurrence_index: int | None = None,
+        include_kinds: list[int] | None = None,
+        exclude_kinds: list[int] | None = None,
+        max_answer_chars: int = -1,
+    ) -> str:
+        retriever = self._symbol_retriever()
+        if name_path is not None:
+            references = retriever.find_referencing_symbols(
+                name_path,
+                relative_file_path=relative_path,
+                include_kinds=include_kinds,
+                exclude_kinds=exclude_kinds,
+            )
+        else:
+            symbol = self._resolve_symbol_at_source_occurrence(
+                relative_path,
+                code_snippet=code_snippet,
+                symbol_text=symbol_text,
+                occurrence_index=occurrence_index,
+            )
+            references = retriever.find_referencing_symbols_by_location(
+                symbol.location,
+                include_kinds=include_kinds,
+                exclude_kinds=exclude_kinds,
+            )
+        result = self._json(self._reference_results_by_file(references))
+        if max_answer_chars != -1 and len(result) > max_answer_chars:
+            return (
+                f"The answer is too long ({len(result)} characters). You can adjust your query or raise the max_answer_chars parameter.\n"
+                f"Reference counts per file:\n{self._json(self._reference_counts_by_file(references))}"
+            )
+        return result
+
     def find_type_definition(
         self,
         relative_path: str,
@@ -194,8 +230,6 @@ class Bridge:
         code_snippet: str | None = None,
         symbol_text: str | None = None,
         occurrence_index: int | None = None,
-        line: int | None = None,
-        column: int | None = None,
         include_body: bool = False,
     ) -> str:
         retriever = self._symbol_retriever()
@@ -205,8 +239,6 @@ class Bridge:
             code_snippet=code_snippet,
             symbol_text=symbol_text,
             occurrence_index=occurrence_index,
-            line=line,
-            column=column,
         )
         lang_server = retriever.get_language_server(relative_path)
         locations = self._request_type_definition_locations(lang_server, relative_path, line, column)
@@ -219,8 +251,9 @@ class Bridge:
         self,
         relative_path: str,
         name_path: str | None = None,
-        line: int | None = None,
-        column: int | None = None,
+        code_snippet: str | None = None,
+        symbol_text: str | None = None,
+        occurrence_index: int | None = None,
         include_body: bool = False,
     ) -> str:
         retriever = self._symbol_retriever()
@@ -230,8 +263,14 @@ class Bridge:
                 raise ValueError(f"Symbol {name_path} has no LSP position.")
             line = symbol.line
             column = symbol.column
-        if line is None or column is None:
-            raise ValueError("find_implementations requires name_path or line and column.")
+        else:
+            line, column = self._resolve_position(
+                relative_path,
+                regex=None,
+                code_snippet=code_snippet,
+                symbol_text=symbol_text,
+                occurrence_index=occurrence_index,
+            )
 
         lang_server = retriever.get_language_server(relative_path)
         try:
@@ -246,6 +285,104 @@ class Bridge:
         if not symbols:
             return self._json(lang_server.request_implementation(relative_path, line, column))
         return self._json(symbols)
+
+    def rename_symbol(
+        self,
+        relative_path: str,
+        new_name: str,
+        name_path: str | None = None,
+        code_snippet: str | None = None,
+        symbol_text: str | None = None,
+        occurrence_index: int | None = None,
+    ) -> str:
+        retriever = self._symbol_retriever()
+        if name_path is not None:
+            from serena.code_editor import LanguageServerCodeEditor
+
+            return LanguageServerCodeEditor(retriever).rename_symbol(name_path, relative_path, new_name)
+
+        line, column = self._resolve_position(
+            relative_path,
+            regex=None,
+            code_snippet=code_snippet,
+            symbol_text=symbol_text,
+            occurrence_index=occurrence_index,
+        )
+        lang_server = retriever.get_language_server(relative_path)
+        rename_result = lang_server.request_rename_symbol_edit(
+            relative_file_path=relative_path,
+            line=line,
+            column=column,
+            new_name=new_name,
+        )
+        if rename_result is None:
+            raise ValueError(f"Language server returned no rename edits for source occurrence in {relative_path}.")
+
+        from serena.code_editor import LanguageServerCodeEditor
+
+        code_editor = LanguageServerCodeEditor(retriever)
+        num_changes = code_editor._apply_workspace_edit(rename_result)
+        if num_changes == 0:
+            raise ValueError(f"Renaming source occurrence in {relative_path} to '{new_name}' resulted in no changes.")
+        return f"Successfully renamed source occurrence in {relative_path} to '{new_name}' ({num_changes} changes applied)"
+
+    def _resolve_symbol_at_source_occurrence(
+        self,
+        relative_path: str,
+        *,
+        code_snippet: str | None,
+        symbol_text: str | None,
+        occurrence_index: int | None,
+    ) -> Any:
+        line, column = self._resolve_position(
+            relative_path,
+            regex=None,
+            code_snippet=code_snippet,
+            symbol_text=symbol_text,
+            occurrence_index=occurrence_index,
+        )
+        lang_server = self._symbol_retriever().get_language_server(relative_path)
+        symbol = lang_server._request_symbol_at_location(
+            relative_path,
+            line,
+            column,
+            include_body=False,
+            body_factory=None,
+        )
+        if symbol is None:
+            raise ValueError(f"No symbol found at source occurrence in {relative_path}.")
+
+        from serena.symbol import LanguageServerSymbol
+
+        return LanguageServerSymbol(symbol)
+
+    def _reference_results_by_file(self, references: list[Any]) -> dict[str, dict[str, list[dict[str, Any]]]]:
+        grouped: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        project = self._agent().get_active_project_or_raise()
+        for ref in references:
+            ref_dict = ref.symbol.to_dict(kind=True, relative_path=True, depth=0, body=False, body_location=True)
+            ref_relative_path = ref.symbol.location.relative_path
+            if ref_relative_path is None:
+                continue
+            content_around_ref = project.retrieve_content_around_line(
+                relative_file_path=ref_relative_path,
+                line=ref.line,
+                context_lines_before=1,
+                context_lines_after=1,
+            )
+            ref_dict["content_around_reference"] = content_around_ref.to_display_string()
+            grouped.setdefault(ref_relative_path, {}).setdefault(str(ref_dict.get("kind", "Unknown")), []).append(ref_dict)
+        return grouped
+
+    @staticmethod
+    def _reference_counts_by_file(references: list[Any]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for ref in references:
+            ref_relative_path = ref.symbol.location.relative_path
+            if ref_relative_path is None:
+                continue
+            counts[ref_relative_path] = counts.get(ref_relative_path, 0) + 1
+        return counts
 
     @staticmethod
     def _request_type_definition_locations(lang_server: Any, relative_path: str, line: int, column: int) -> list[Any]:
@@ -315,13 +452,9 @@ class Bridge:
         code_snippet: str | None,
         symbol_text: str | None,
         occurrence_index: int | None,
-        line: int | None,
-        column: int | None,
     ) -> tuple[int, int]:
-        if line is not None and column is not None:
-            return line, column
         if regex is None and code_snippet is None:
-            raise ValueError("A regex with one capture group, code_snippet, or line and column is required.")
+            raise ValueError("A regex with one capture group or code_snippet is required.")
 
         path = Path(self._agent().get_active_project_or_raise().project_root) / relative_path
         content = path.read_text(encoding="utf-8")
