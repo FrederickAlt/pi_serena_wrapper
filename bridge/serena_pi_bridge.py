@@ -30,6 +30,12 @@ NATIVE_TOOL_NAMES = {
     "rename_symbol",
 }
 
+NATIVE_UNTRUNCATED_READ_TOOL_NAMES = {
+    "get_symbols_overview",
+    "find_symbol",
+    "find_referencing_symbols",
+}
+
 EXPOSED_TOOL_NAMES = [
     "get_symbols_overview",
     "find_symbol",
@@ -122,6 +128,8 @@ class Bridge:
             raise ValueError(f"Unknown Serena pi tool: {tool}")
         try:
             if tool in NATIVE_TOOL_NAMES:
+                if tool in NATIVE_UNTRUNCATED_READ_TOOL_NAMES:
+                    args = {"max_answer_chars": -1, **args}
                 result = self._agent().get_tool_by_name(tool).apply_ex(**args)
             elif tool == "find_declaration":
                 result = self._run_agent_task(lambda: self.find_declaration(**args), tool)
