@@ -1,6 +1,6 @@
 # Task
 
-Your task is to test the LSP tools that were provided to beyond the standard tools. You can use them in this directory. Document any bug you find or ambiguity that confused you when using the tools. If there are only the standard tools available to you, then only write to the report that LSP is not available. Your workspace is a git worktree and you are free to edit it with the tools that are to be tested.
+Your task is to test the LSP tools that were provided to beyond the standard tools. You can use them in this directory but run it on python files. Document any bug you find or ambiguity that confused you when using the tools. If there are only the standard tools available to you, then only write to the report that LSP is not available. Your workspace is a git worktree and you are free to edit it with the tools that are to be tested.
 
 # Done
 

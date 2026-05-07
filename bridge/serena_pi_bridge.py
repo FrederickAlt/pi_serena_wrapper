@@ -116,6 +116,31 @@ class Bridge:
         folder_name = Path(project_root).name or "project"
         return PROJECT_DATA_ROOT / f"{folder_name}-{digest}"
 
+    def _ensure_language_for_args(self, args: dict[str, Any]) -> None:
+        relative_path = args.get("relative_path")
+        if not isinstance(relative_path, str) or relative_path == "":
+            return
+        language = self._language_for_relative_path(relative_path)
+        if language is None:
+            return
+        project = self._agent().get_active_project_or_raise()
+        if language in project.project_config.languages:
+            return
+        project.add_language(language)
+
+    @staticmethod
+    def _language_for_relative_path(relative_path: str) -> Any | None:
+        suffix = Path(relative_path).suffix.lower()
+        if suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
+            return Bridge._language_enum().TYPESCRIPT
+        if suffix == ".py":
+            return Bridge._language_enum().PYTHON
+        return None
+
+    @staticmethod
+    def _language_enum() -> Any:
+        return import_module("solidlsp.ls_config").Language
+
     def list_tools(self) -> list[str]:
         self._agent()
         return EXPOSED_TOOL_NAMES
@@ -124,6 +149,7 @@ class Bridge:
         if tool not in EXPOSED_TOOL_NAMES:
             raise ValueError(f"Unknown Serena pi tool: {tool}")
         try:
+            self._ensure_language_for_args(args)
             if tool == "get_symbols_overview":
                 result = self._agent().get_tool_by_name(tool).apply_ex(max_answer_chars=-1, **args)
             elif tool == "find_symbol":

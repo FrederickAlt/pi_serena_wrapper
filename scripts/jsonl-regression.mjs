@@ -123,6 +123,20 @@ obj.foo()
 `);
 }
 
+async function writeMixedDemandFixture() {
+  const mixedRoot = path.join(fixtureRoot, "mixed-demand");
+  await mkdir(path.join(mixedRoot, "src"), { recursive: true });
+  await mkdir(path.join(mixedRoot, "tests"), { recursive: true });
+  await writeFile(path.join(mixedRoot, "src", "index.ts"), `export function tsThing(): number {
+  return 1;
+}
+`);
+  await writeFile(path.join(mixedRoot, "tests", "test_sample.py"), `def py_thing():
+    return 2
+`);
+  return mixedRoot;
+}
+
 function startBridge() {
   stdout = "";
   stderr = "";
@@ -357,6 +371,22 @@ async function run() {
   assert(finalFailureEntries.length === 1, `Expected one failed tool log entry, got ${finalFailureEntries.length}: ${finalFailureLog}`);
   assert(finalFailureEntries[0].tool === "find_implementations", JSON.stringify(finalFailureEntries[0]));
   assert(finalFailureEntries[0].failure_kind === "error_result", JSON.stringify(finalFailureEntries[0]));
+
+  await stopBridge();
+
+  const mixedDemandRoot = await writeMixedDemandFixture();
+  startBridge();
+  await request("init", { cwd: mixedDemandRoot });
+  const demandTsOverview = stringify(await request("call_tool", {
+    tool: "get_symbols_overview",
+    args: { relative_path: "src/index.ts", depth: 0 },
+  }));
+  assert(demandTsOverview.includes("tsThing"), demandTsOverview);
+  const demandPyOverview = stringify(await request("call_tool", {
+    tool: "get_symbols_overview",
+    args: { relative_path: "tests/test_sample.py", depth: 0 },
+  }));
+  assert(demandPyOverview.includes("py_thing"), demandPyOverview);
 
   await stopBridge();
   console.log(`PASS jsonl regression fixture: ${fixtureRoot}`);
