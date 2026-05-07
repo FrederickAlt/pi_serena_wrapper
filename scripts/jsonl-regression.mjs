@@ -73,6 +73,12 @@ export function useGreeting(): string {
   const namedGreeter: Greeter = greeter;
   return greeter.greet("World") + makeGreeting("Serena");
 }
+
+export function useGreetingTwice(): string {
+  const speaker = new Greeter();
+  const first = speaker.greet("First");
+  return first + speaker.greet("Second");
+}
 `);
   await writeFile(path.join(fixtureRoot, "src", "implementation.ts"), `import type { Runner } from "./index";
 
@@ -307,6 +313,18 @@ async function run() {
     args: { relative_path: "src/ambiguous-rename.ts", code_snippet: "function first(signal: string)", symbol_text: "first" },
   }));
   assert(signalSymbol.matches.length === 1, JSON.stringify(signalSymbol));
+
+  const filteredSnippetSymbol = JSON.parse(await request("call_tool", {
+    tool: "get_symbol_from_snippet",
+    args: {
+      relative_path: "src/usage.ts",
+      code_snippet: 'speaker.greet("',
+      symbol_text: "greet",
+      line: 11,
+      column: 25,
+    },
+  }));
+  assert(filteredSnippetSymbol.matches.some((match) => match.name_path === "Greeter/greet"), JSON.stringify(filteredSnippetSymbol));
 
   const ambiguousRename = stringify(await request("call_tool", {
     tool: "rename_symbol",

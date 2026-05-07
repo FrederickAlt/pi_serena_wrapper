@@ -182,11 +182,13 @@ class Bridge:
         code_snippet: str,
         symbol_text: str,
         resolve: str = "declaration",
+        line: int | None = None,
+        column: int | None = None,
     ) -> str:
         if resolve not in {"declaration", "type_definition"}:
             raise ValueError("resolve must be either 'declaration' or 'type_definition'.")
 
-        positions = self._resolve_all_source_positions(relative_path, code_snippet, symbol_text)
+        positions = self._resolve_all_source_positions(relative_path, code_snippet, symbol_text, line, column)
         retriever = self._symbol_retriever()
         lang_server = retriever.get_language_server(relative_path)
         matches: list[dict[str, Any]] = []
@@ -380,7 +382,14 @@ class Bridge:
             grouped.setdefault(ref_relative_path, {}).setdefault(str(ref_dict.get("kind", "Unknown")), []).append(ref_dict)
         return grouped
 
-    def _resolve_all_source_positions(self, relative_path: str, code_snippet: str, symbol_text: str) -> list[tuple[int, int]]:
+    def _resolve_all_source_positions(
+        self,
+        relative_path: str,
+        code_snippet: str,
+        symbol_text: str,
+        line: int | None = None,
+        column: int | None = None,
+    ) -> list[tuple[int, int]]:
         path = Path(self._agent().get_active_project_or_raise().project_root) / relative_path
         content = path.read_text(encoding="utf-8")
         starts = self._find_all_offsets(content, code_snippet)
@@ -391,8 +400,51 @@ class Bridge:
                 raise ValueError("symbol_text was not found inside code_snippet.")
             if code_snippet.find(symbol_text, target_start + 1) != -1:
                 raise ValueError("symbol_text must occur exactly once inside code_snippet. Use a smaller code_snippet around the symbol if needed.")
-            positions.append(self._line_col_for_offset(content, start + target_start))
+            snippet_start_line, snippet_start_col = self._line_col_for_offset(content, start)
+            snippet_end_line, snippet_end_col = self._line_col_for_offset(content, start + len(code_snippet))
+            symbol_offset = start + target_start
+            symbol_line, symbol_col = self._line_col_for_offset(content, symbol_offset)
+            symbol_end_line, symbol_end_col = self._line_col_for_offset(content, symbol_offset + len(symbol_text))
+            if line is not None and not self._position_spans_line(
+                snippet_start_line,
+                snippet_end_line,
+                line,
+            ):
+                continue
+            if column is not None:
+                if line is None:
+                    raise ValueError("line must be provided when column is provided.")
+                if not self._position_contains_line_column(symbol_line, symbol_col, symbol_end_line, symbol_end_col, line, column):
+                    continue
+            positions.append((symbol_line, symbol_col))
+        if not positions:
+            if line is not None or column is not None:
+                raise ValueError("code_snippet was found, but no occurrence matched the provided line/column filters.")
+            raise ValueError("No source positions were resolved from code_snippet and symbol_text.")
         return positions
+
+    @staticmethod
+    def _position_spans_line(start_line: int, end_line: int, line: int) -> bool:
+        return start_line <= line <= end_line
+
+    @staticmethod
+    def _position_contains_line_column(
+        start_line: int,
+        start_col: int,
+        end_line: int,
+        end_col: int,
+        line: int,
+        column: int,
+    ) -> bool:
+        if line < start_line or line > end_line:
+            return False
+        if start_line == end_line:
+            return start_col <= column < end_col
+        if line == start_line:
+            return column >= start_col
+        if line == end_line:
+            return column < end_col
+        return True
 
     @staticmethod
     def _find_all_offsets(content: str, needle: str) -> list[int]:

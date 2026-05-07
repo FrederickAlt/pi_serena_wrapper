@@ -190,11 +190,15 @@ type GetSymbolFromSnippetInput = {
   relative_path: string;
   code_snippet: string;
   symbol_text: string;
+  line?: number;
+  column?: number;
   resolve?: "declaration" | "type_definition";
 };
 ```
 
 Default: `resolve = "declaration"`.
+
+`line` and `column` are optional 0-based filters for ambiguous repeated snippets. `line` keeps only snippet occurrences spanning that line. `column` requires `line` and keeps only occurrences whose `symbol_text` covers that column.
 
 ### Return Schema
 
