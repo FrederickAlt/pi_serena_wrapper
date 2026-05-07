@@ -201,6 +201,11 @@ Default: `resolve = "declaration"`.
 ```ts
 type GetSymbolFromSnippetOutput = {
   matches: SerenaSymbolReference[];
+  locations?: LspLocation[];
+  unresolved?: {
+    reason: "no_lsp_target" | "external_or_unindexed_target";
+    message: string;
+  };
 };
 ```
 
@@ -223,6 +228,11 @@ Example:
 ```
 
 If the snippet appears multiple times, all resolved symbols are returned. The model should inspect `body_location` with native read tools or retry with a more specific `code_snippet`.
+
+If `matches` is empty, `unresolved` explains the targeted failure mode:
+
+- `no_lsp_target`: the language server did not return a declaration/type-definition target.
+- `external_or_unindexed_target`: the language server returned location(s), but the target could not be converted into a Serena project symbol. In this case `locations` contains the raw LSP locations.
 
 Use `resolve: "type_definition"` when the model needs the concrete type/class/interface behind a source occurrence:
 
@@ -326,7 +336,7 @@ type FindDeclarationOutput = {
 };
 ```
 
-`symbols` contains converted Serena-style symbol references when possible. `locations` is only present when the language server returns raw locations that cannot be converted to symbols.
+`symbols` contains converted Serena-style symbol references when possible. If the language server returns no declaration for a symbol that Serena already resolved, the wrapper returns the resolved Serena symbol itself as the declaration fallback. `locations` is only present when raw language-server locations are returned and cannot be converted to symbols.
 
 No source body is returned.
 

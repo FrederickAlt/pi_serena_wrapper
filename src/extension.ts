@@ -54,9 +54,11 @@ function cancelledToolResult() {
 
 const serenaPromptGuidelines = [
   "Call Serena LSP tools as pi tools by their exact underscore names; do not try to run Serena CLI commands such as `serena tools get-symbols-overview`.",
+  "A Serena symbol is a named language-server code entity such as a class, function, method, interface, field, or variable; name_path is Serena's path to that entity in the symbol tree, not arbitrary source text.",
   "Use get_symbols_overview to inspect top-level symbols in a file before searching more narrowly.",
   "Use find_symbol to retrieve a known symbol by Serena name path, optionally with children.",
   "Use get_symbol_from_snippet to convert a concrete source occurrence into Serena-style relative_path and name_path values.",
+  "If get_symbol_from_snippet returns no matches but includes unresolved and locations, the LSP resolved the occurrence but it could not be converted to a Serena project symbol; inspect locations with native read tools if needed.",
   "Use find_referencing_symbols to find references to a symbol defined in a specific file.",
   "Use get_symbol_from_snippet with resolve type_definition on a variable or expression when you need the concrete type/class/interface behind that occurrence.",
   "If get_symbol_from_snippet returns multiple matches, inspect the returned body_location values with native read tools or retry with a more specific code_snippet.",

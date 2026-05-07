@@ -190,19 +190,37 @@ class Bridge:
         retriever = self._symbol_retriever()
         lang_server = retriever.get_language_server(relative_path)
         matches: list[dict[str, Any]] = []
+        raw_locations: list[Any] = []
         for line, column in positions:
             if resolve == "declaration":
                 symbol = lang_server.request_defining_symbol(relative_path, line, column, include_body=False)
                 if symbol is None:
                     locations = lang_server.request_definition(relative_path, line, column)
+                    raw_locations.extend(locations)
                     matches.extend(self._symbol_references_for_locations(lang_server, locations))
                 else:
                     matches.append(self._symbol_reference_from_lsp_symbol(symbol))
             else:
                 locations = self._request_type_definition_locations(lang_server, relative_path, line, column)
+                raw_locations.extend(locations)
                 matches.extend(self._symbol_references_for_locations(lang_server, locations))
 
-        return self._json({"matches": self._dedupe_symbol_references(matches)})
+        deduped_matches = self._dedupe_symbol_references(matches)
+        result: dict[str, Any] = {"matches": deduped_matches}
+        if not deduped_matches:
+            deduped_locations = self._dedupe_locations(raw_locations)
+            if deduped_locations:
+                result["locations"] = deduped_locations
+                result["unresolved"] = {
+                    "reason": "external_or_unindexed_target",
+                    "message": "The language server resolved this occurrence, but the target could not be converted to a Serena project symbol.",
+                }
+            else:
+                result["unresolved"] = {
+                    "reason": "no_lsp_target",
+                    "message": "The language server did not return a declaration or type definition for this occurrence.",
+                }
+        return self._json(result)
 
     def find_declaration(
         self,
@@ -220,6 +238,8 @@ class Bridge:
             symbols = self._symbol_references_for_locations(lang_server, locations)
         else:
             symbols = [self._symbol_reference_from_lsp_symbol(symbol_result)]
+        if not symbols:
+            symbols = [self._symbol_reference_from_serena_symbol(symbol)]
         result: dict[str, Any] = {"symbols": symbols}
         if locations and not symbols:
             result["locations"] = locations
@@ -330,6 +350,18 @@ class Bridge:
             deduped.append(symbol)
         return deduped
 
+    @staticmethod
+    def _dedupe_locations(locations: list[Any]) -> list[Any]:
+        deduped: list[Any] = []
+        seen: set[str] = set()
+        for location in locations:
+            key = json.dumps(Bridge._jsonable(location), sort_keys=True, ensure_ascii=False, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(location)
+        return deduped
+
     def _reference_results_by_file(self, references: list[Any]) -> dict[str, dict[str, list[dict[str, Any]]]]:
         grouped: dict[str, dict[str, list[dict[str, Any]]]] = {}
         project = self._agent().get_active_project_or_raise()
@@ -371,6 +403,8 @@ class Bridge:
         while start != -1:
             starts.append(start)
             start = content.find(needle, start + 1)
+        if not starts:
+            raise ValueError("code_snippet was not found in relative_path.")
         return starts
 
     @staticmethod

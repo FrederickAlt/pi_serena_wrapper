@@ -5,7 +5,7 @@ const RelativePath = Type.String({
 });
 
 const NamePath = Type.String({
-  description: "Serena symbol name path, for example MyClass/my_method or /MyClass/my_method.",
+  description: "Serena symbol name path for a named code entity in the symbol tree, for example MyClass/my_method or /MyClass/my_method.",
 });
 
 const KindList = Type.Optional(Type.Array(Type.Number(), {

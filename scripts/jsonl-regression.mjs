@@ -61,6 +61,10 @@ export function makeGreeting(name: string): string {
   const greeter = new Greeter();
   return greeter.greet(name);
 }
+
+export default function (name: string): string {
+  return makeGreeting(name);
+}
 `);
   await writeFile(path.join(fixtureRoot, "src", "usage.ts"), `import { Greeter, makeGreeting } from "./index";
 
@@ -258,6 +262,25 @@ async function run() {
     args: { relative_path: "src/index.ts", name_path: "Greeter/greet" },
   }));
   assert(declaration.includes("src/index.ts") && declaration.includes("greet"), declaration);
+
+  const ownDeclaration = stringify(await request("call_tool", {
+    tool: "find_declaration",
+    args: { relative_path: "src/index.ts", name_path: "default" },
+  }));
+  assert(ownDeclaration.includes("src/index.ts") && ownDeclaration.includes("default"), ownDeclaration);
+
+  const importSpecifier = JSON.parse(await request("call_tool", {
+    tool: "get_symbol_from_snippet",
+    args: {
+      relative_path: "src/usage.ts",
+      code_snippet: 'import { Greeter, makeGreeting } from "./index";',
+      symbol_text: "Greeter",
+    },
+  }));
+  assert(Array.isArray(importSpecifier.matches), JSON.stringify(importSpecifier));
+  if (importSpecifier.matches.length === 0) {
+    assert(importSpecifier.unresolved?.reason === "external_or_unindexed_target" || importSpecifier.unresolved?.reason === "no_lsp_target", JSON.stringify(importSpecifier));
+  }
 
   const typeDefinition = stringify(await request("call_tool", {
     tool: "get_symbol_from_snippet",
