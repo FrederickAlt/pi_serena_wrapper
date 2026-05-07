@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 type PendingRequest = {
@@ -12,13 +14,49 @@ type PendingRequest = {
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 const DEFAULT_TIMEOUT_MS = 240_000;
+const execFileAsync = promisify(execFile);
 
 function packageRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 }
 
 function setupCommand(root: string): string {
-  return `cd ${root} && python3 -m venv .venv && .venv/bin/pip install --upgrade serena-agent`;
+  return `cd ${root} && python3 -m venv .venv && .venv/bin/pip install --upgrade -r requirements.txt`;
+}
+
+function localPython(root: string): string {
+  return path.join(root, ".venv", "bin", "python");
+}
+
+function localPip(root: string): string {
+  return path.join(root, ".venv", "bin", "pip");
+}
+
+function requirementsPath(root: string): string {
+  return path.join(root, "requirements.txt");
+}
+
+function commandText(command: string, args: string[]): string {
+  return [command, ...args].join(" ");
+}
+
+function errorOutput(error: unknown): string {
+  if (error && typeof error === "object") {
+    const maybe = error as { stderr?: unknown; stdout?: unknown; message?: unknown };
+    const stderr = typeof maybe.stderr === "string" ? maybe.stderr.trim() : "";
+    const stdout = typeof maybe.stdout === "string" ? maybe.stdout.trim() : "";
+    const message = typeof maybe.message === "string" ? maybe.message : "";
+    return [stderr, stdout, message].filter(Boolean).join("\n");
+  }
+  return String(error);
+}
+
+async function runSetupCommand(command: string, args: string[], cwd: string): Promise<void> {
+  try {
+    await execFileAsync(command, args, { cwd, maxBuffer: 10 * 1024 * 1024 });
+  } catch (error) {
+    throw new Error(`Failed to run ${commandText(command, args)} in ${cwd}:\n${errorOutput(error)}`);
+  }
 }
 
 export class SerenaBridgeClient {
@@ -28,6 +66,7 @@ export class SerenaBridgeClient {
   private stdoutBuffer = "";
   private stderr = "";
   private initializedFor: string | undefined;
+  private python: string | undefined;
 
   constructor(private readonly root = packageRoot()) {}
 
@@ -53,13 +92,42 @@ export class SerenaBridgeClient {
   private async init(cwd: string, signal?: AbortSignal): Promise<void> {
     if (this.initializedFor === cwd && this.proc && !this.proc.killed) return;
     if (this.proc) await this.shutdown();
+    await this.ensurePython();
     this.start();
-    await this.request("init", { cwd }, signal);
+    try {
+      await this.request("init", { cwd }, signal);
+    } catch (error) {
+      await this.shutdown();
+      await this.ensurePython({ reinstall: true });
+      this.start();
+      await this.request("init", { cwd }, signal);
+    }
     this.initializedFor = cwd;
   }
 
+  private async ensurePython(options: { reinstall?: boolean } = {}): Promise<void> {
+    const python = localPython(this.root);
+    const pip = localPip(this.root);
+    const requirements = requirementsPath(this.root);
+
+    const createdVenv = !existsSync(python);
+    if (createdVenv) {
+      await runSetupCommand("python3", ["-m", "venv", ".venv"], this.root);
+    }
+
+    if (options.reinstall || createdVenv) {
+      await runSetupCommand(pip, ["install", "--upgrade", "-r", requirements], this.root);
+    }
+
+    if (!existsSync(python)) {
+      throw new Error(`Serena Python environment is missing. Run: ${setupCommand(this.root)}`);
+    }
+
+    this.python = python;
+  }
+
   private start(): void {
-    const python = path.join(this.root, ".venv", "bin", "python");
+    const python = this.python ?? localPython(this.root);
     const script = path.join(this.root, "bridge", "serena_pi_bridge.py");
 
     if (!existsSync(python)) {

@@ -1,4 +1,4 @@
-import { Type } from "typebox";
+import { Type } from "@sinclair/typebox";
 
 const MaxAnswerChars = Type.Optional(Type.Number({
   description: "Maximum number of characters in the Serena response. -1 uses Serena's default.",

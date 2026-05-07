@@ -1,0 +1,24 @@
+{
+  "name": "pi-serena-lsp",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./src/extension.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:jsonl": "node scripts/jsonl-regression.mjs",
+    "test": "npm run typecheck && npm run test:jsonl"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.41"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.73.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.3"
+  }
+}

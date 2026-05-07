@@ -3,3 +3,4 @@
 .serena-projects/
 __pycache__/
 *.pyc
+node_modules/
