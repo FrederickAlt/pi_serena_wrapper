@@ -8,7 +8,6 @@ import hashlib
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 import os
-import re
 import sys
 import traceback
 from pathlib import Path
@@ -26,6 +25,7 @@ os.environ.setdefault("SERENA_USAGE_REPORTING", "false")
 NATIVE_TOOL_NAMES = {
     "get_symbols_overview",
     "find_symbol",
+    "find_referencing_symbols",
 }
 
 NATIVE_UNTRUNCATED_READ_TOOL_NAMES = {
@@ -36,9 +36,9 @@ NATIVE_UNTRUNCATED_READ_TOOL_NAMES = {
 EXPOSED_TOOL_NAMES = [
     "get_symbols_overview",
     "find_symbol",
+    "get_symbol_from_snippet",
     "find_referencing_symbols",
     "find_declaration",
-    "find_type_definition",
     "find_implementations",
     "rename_symbol",
 ]
@@ -124,14 +124,14 @@ class Bridge:
         if tool not in EXPOSED_TOOL_NAMES:
             raise ValueError(f"Unknown Serena pi tool: {tool}")
         try:
-            if tool in NATIVE_TOOL_NAMES:
-                if tool in NATIVE_UNTRUNCATED_READ_TOOL_NAMES:
-                    args = {"max_answer_chars": -1, **args}
-                result = self._agent().get_tool_by_name(tool).apply_ex(**args)
+            if tool == "get_symbols_overview":
+                result = self._agent().get_tool_by_name(tool).apply_ex(max_answer_chars=-1, **args)
+            elif tool == "find_symbol":
+                result = self.find_symbol(**args)
+            elif tool == "get_symbol_from_snippet":
+                result = self._run_agent_task(lambda: self.get_symbol_from_snippet(**args), tool)
             elif tool == "find_declaration":
                 result = self._run_agent_task(lambda: self.find_declaration(**args), tool)
-            elif tool == "find_type_definition":
-                result = self._run_agent_task(lambda: self.find_type_definition(**args), tool)
             elif tool == "find_implementations":
                 result = self._run_agent_task(lambda: self.find_implementations(**args), tool)
             elif tool == "find_referencing_symbols":
@@ -155,206 +155,180 @@ class Bridge:
             self.agent = None
         return "OK"
 
+    def find_symbol(
+        self,
+        name_path_pattern: str,
+        depth: int = 0,
+        relative_path: str = "",
+        kinds: list[int] | None = None,
+        max_matches: int = -1,
+    ) -> str:
+        return self._agent().get_tool_by_name("find_symbol").apply_ex(
+            name_path_pattern=name_path_pattern,
+            depth=depth,
+            relative_path=relative_path,
+            include_body=False,
+            include_info=False,
+            include_kinds=kinds or [],
+            exclude_kinds=[],
+            substring_matching=False,
+            max_matches=max_matches,
+            max_answer_chars=-1,
+        )
+
+    def get_symbol_from_snippet(
+        self,
+        relative_path: str,
+        code_snippet: str,
+        symbol_text: str,
+        resolve: str = "declaration",
+    ) -> str:
+        if resolve not in {"declaration", "type_definition"}:
+            raise ValueError("resolve must be either 'declaration' or 'type_definition'.")
+
+        positions = self._resolve_all_source_positions(relative_path, code_snippet, symbol_text)
+        retriever = self._symbol_retriever()
+        lang_server = retriever.get_language_server(relative_path)
+        matches: list[dict[str, Any]] = []
+        for line, column in positions:
+            if resolve == "declaration":
+                symbol = lang_server.request_defining_symbol(relative_path, line, column, include_body=False)
+                if symbol is None:
+                    locations = lang_server.request_definition(relative_path, line, column)
+                    matches.extend(self._symbol_references_for_locations(lang_server, locations))
+                else:
+                    matches.append(self._symbol_reference_from_lsp_symbol(symbol))
+            else:
+                locations = self._request_type_definition_locations(lang_server, relative_path, line, column)
+                matches.extend(self._symbol_references_for_locations(lang_server, locations))
+
+        return self._json({"matches": self._dedupe_symbol_references(matches)})
+
     def find_declaration(
         self,
         relative_path: str,
-        regex: str | None = None,
-        code_snippet: str | None = None,
-        symbol_text: str | None = None,
-        occurrence_index: int | None = None,
-        name_path: str | None = None,
-        include_body: bool = False,
+        name_path: str,
     ) -> str:
-        retriever = self._symbol_retriever()
-        if name_path is not None:
-            symbol = retriever.find_unique(name_path, within_relative_path=relative_path)
-            return self._json(symbol.to_dict(kind=True, name_path=True, relative_path=True, body_location=True, body=include_body))
-
-        line, column = self._resolve_position(
-            relative_path,
-            regex=regex,
-            code_snippet=code_snippet,
-            symbol_text=symbol_text,
-            occurrence_index=occurrence_index,
-        )
-        lang_server = retriever.get_language_server(relative_path)
-        symbol = lang_server.request_defining_symbol(relative_path, line, column, include_body=include_body)
-        if symbol is None:
-            locations = lang_server.request_definition(relative_path, line, column)
-            return self._json(locations)
-        return self._json(symbol)
+        symbol = self._resolve_unique_symbol(name_path, relative_path)
+        if symbol.line is None or symbol.column is None:
+            raise ValueError(f"Symbol {name_path} has no LSP position.")
+        lang_server = self._symbol_retriever().get_language_server(symbol.relative_path or relative_path)
+        symbol_result = lang_server.request_defining_symbol(symbol.relative_path or relative_path, symbol.line, symbol.column, include_body=False)
+        locations: list[Any] = []
+        if symbol_result is None:
+            locations = lang_server.request_definition(symbol.relative_path or relative_path, symbol.line, symbol.column)
+            symbols = self._symbol_references_for_locations(lang_server, locations)
+        else:
+            symbols = [self._symbol_reference_from_lsp_symbol(symbol_result)]
+        result: dict[str, Any] = {"symbols": symbols}
+        if locations and not symbols:
+            result["locations"] = locations
+        return self._json(result)
 
     def find_referencing_symbols(
         self,
         relative_path: str,
-        name_path: str | None = None,
-        code_snippet: str | None = None,
-        symbol_text: str | None = None,
-        occurrence_index: int | None = None,
-        include_kinds: list[int] | None = None,
-        exclude_kinds: list[int] | None = None,
-        max_answer_chars: int = -1,
+        name_path: str,
+        kinds: list[int] | None = None,
     ) -> str:
-        retriever = self._symbol_retriever()
-        if name_path is not None:
-            references = retriever.find_referencing_symbols(
-                name_path,
-                relative_file_path=relative_path,
-                include_kinds=include_kinds,
-                exclude_kinds=exclude_kinds,
-            )
-        else:
-            symbol = self._resolve_symbol_at_source_occurrence(
-                relative_path,
-                code_snippet=code_snippet,
-                symbol_text=symbol_text,
-                occurrence_index=occurrence_index,
-            )
-            references = retriever.find_referencing_symbols_by_location(
-                symbol.location,
-                include_kinds=include_kinds,
-                exclude_kinds=exclude_kinds,
-            )
-        result = self._json(self._reference_results_by_file(references))
-        if max_answer_chars != -1 and len(result) > max_answer_chars:
-            return (
-                f"The answer is too long ({len(result)} characters). You can adjust your query or raise the max_answer_chars parameter.\n"
-                f"Reference counts per file:\n{self._json(self._reference_counts_by_file(references))}"
-            )
-        return result
+        symbol = self._resolve_unique_symbol(name_path, relative_path)
+        from solidlsp.ls_types import SymbolKind
 
-    def find_type_definition(
-        self,
-        relative_path: str,
-        regex: str | None = None,
-        code_snippet: str | None = None,
-        symbol_text: str | None = None,
-        occurrence_index: int | None = None,
-        include_body: bool = False,
-    ) -> str:
-        retriever = self._symbol_retriever()
-        line, column = self._resolve_position(
-            relative_path,
-            regex=regex,
-            code_snippet=code_snippet,
-            symbol_text=symbol_text,
-            occurrence_index=occurrence_index,
+        include_kinds = [SymbolKind(k) for k in kinds] if kinds else None
+        references = self._symbol_retriever().find_referencing_symbols_by_location(
+            symbol.location,
+            include_body=False,
+            include_kinds=include_kinds,
+            exclude_kinds=None,
         )
-        lang_server = retriever.get_language_server(relative_path)
-        locations = self._request_type_definition_locations(lang_server, relative_path, line, column)
-        symbols = self._symbols_for_locations(lang_server, locations, include_body=include_body)
-        if symbols:
-            return self._json(symbols)
-        return self._json(locations)
+        return self._json(self._reference_results_by_file(references))
 
     def find_implementations(
         self,
         relative_path: str,
-        name_path: str | None = None,
-        code_snippet: str | None = None,
-        symbol_text: str | None = None,
-        occurrence_index: int | None = None,
-        include_body: bool = False,
+        name_path: str,
     ) -> str:
-        retriever = self._symbol_retriever()
-        if name_path is not None:
-            symbol = retriever.find_unique(name_path, within_relative_path=relative_path)
-            if symbol.line is None or symbol.column is None:
-                raise ValueError(f"Symbol {name_path} has no LSP position.")
-            line = symbol.line
-            column = symbol.column
-        else:
-            line, column = self._resolve_position(
-                relative_path,
-                regex=None,
-                code_snippet=code_snippet,
-                symbol_text=symbol_text,
-                occurrence_index=occurrence_index,
-            )
-
-        lang_server = retriever.get_language_server(relative_path)
+        symbol = self._resolve_unique_symbol(name_path, relative_path)
+        if symbol.line is None or symbol.column is None:
+            raise ValueError(f"Symbol {name_path} has no LSP position.")
+        symbol_relative_path = symbol.relative_path or relative_path
+        lang_server = self._symbol_retriever().get_language_server(symbol_relative_path)
         try:
-            symbols = lang_server.request_implementing_symbols(relative_path, line, column, include_body=include_body)
+            symbols = lang_server.request_implementing_symbols(symbol_relative_path, symbol.line, symbol.column, include_body=False)
         except Exception as exc:
             if self._is_unsupported_lsp_method(exc, "textDocument/implementation"):
                 return (
                     "Error: find_implementations is not supported by the active language server "
-                    f"for {relative_path}. The language server does not support textDocument/implementation."
+                    f"for {symbol_relative_path}. The language server does not support textDocument/implementation."
                 )
             raise
-        if not symbols:
-            return self._json(lang_server.request_implementation(relative_path, line, column))
-        return self._json(symbols)
+        if symbols:
+            return self._json({"symbols": [self._symbol_reference_from_lsp_symbol(s) for s in symbols]})
+        locations = lang_server.request_implementation(symbol_relative_path, symbol.line, symbol.column)
+        return self._json({"symbols": self._symbol_references_for_locations(lang_server, locations), "locations": locations})
 
     def rename_symbol(
         self,
         relative_path: str,
+        name_path: str,
         new_name: str,
-        name_path: str | None = None,
-        code_snippet: str | None = None,
-        symbol_text: str | None = None,
-        occurrence_index: int | None = None,
     ) -> str:
-        retriever = self._symbol_retriever()
-        if name_path is not None:
-            from serena.code_editor import LanguageServerCodeEditor
-
-            return LanguageServerCodeEditor(retriever).rename_symbol(name_path, relative_path, new_name)
-
-        line, column = self._resolve_position(
-            relative_path,
-            regex=None,
-            code_snippet=code_snippet,
-            symbol_text=symbol_text,
-            occurrence_index=occurrence_index,
-        )
-        lang_server = retriever.get_language_server(relative_path)
-        rename_result = lang_server.request_rename_symbol_edit(
-            relative_file_path=relative_path,
-            line=line,
-            column=column,
-            new_name=new_name,
-        )
-        if rename_result is None:
-            raise ValueError(f"Language server returned no rename edits for source occurrence in {relative_path}.")
-
+        symbol = self._resolve_unique_symbol(name_path, relative_path)
         from serena.code_editor import LanguageServerCodeEditor
 
-        code_editor = LanguageServerCodeEditor(retriever)
-        num_changes = code_editor._apply_workspace_edit(rename_result)
-        if num_changes == 0:
-            raise ValueError(f"Renaming source occurrence in {relative_path} to '{new_name}' resulted in no changes.")
-        return f"Successfully renamed source occurrence in {relative_path} to '{new_name}' ({num_changes} changes applied)"
-
-    def _resolve_symbol_at_source_occurrence(
-        self,
-        relative_path: str,
-        *,
-        code_snippet: str | None,
-        symbol_text: str | None,
-        occurrence_index: int | None,
-    ) -> Any:
-        line, column = self._resolve_position(
-            relative_path,
-            regex=None,
-            code_snippet=code_snippet,
-            symbol_text=symbol_text,
-            occurrence_index=occurrence_index,
+        return LanguageServerCodeEditor(self._symbol_retriever()).rename_symbol(
+            symbol.get_name_path(),
+            symbol.relative_path or relative_path,
+            new_name,
         )
-        lang_server = self._symbol_retriever().get_language_server(relative_path)
-        symbol = lang_server._request_symbol_at_location(
-            relative_path,
-            line,
-            column,
-            include_body=False,
-            body_factory=None,
-        )
-        if symbol is None:
-            raise ValueError(f"No symbol found at source occurrence in {relative_path}.")
 
+    def _resolve_unique_symbol(self, name_path: str, relative_path: str) -> Any:
+        retriever = self._symbol_retriever()
+        candidates = retriever.find(name_path, substring_matching=False, within_relative_path=relative_path)
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) == 0:
+            raise ValueError(f"No symbol matching '{name_path}' found")
+
+        exact_matches = [s for s in candidates if s.get_name_path() == name_path]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+
+        raise ValueError(
+            f"Found multiple {len(candidates)} symbols matching '{name_path}'. "
+            "They are: \n" + self._json([self._symbol_reference_from_serena_symbol(s) for s in candidates])
+        )
+
+    @staticmethod
+    def _symbol_reference_from_serena_symbol(symbol: Any) -> dict[str, Any]:
+        return symbol.to_dict(kind=True, name_path=True, relative_path=True, body_location=True, depth=0, body=False)
+
+    @staticmethod
+    def _symbol_reference_from_lsp_symbol(symbol: Any) -> dict[str, Any]:
         from serena.symbol import LanguageServerSymbol
 
-        return LanguageServerSymbol(symbol)
+        if hasattr(symbol, "to_dict"):
+            return Bridge._symbol_reference_from_serena_symbol(symbol)
+        return LanguageServerSymbol(symbol).to_dict(kind=True, name_path=True, relative_path=True, body_location=True, depth=0, body=False)
+
+    def _symbol_references_for_locations(self, lang_server: Any, locations: list[Any]) -> list[dict[str, Any]]:
+        return [self._symbol_reference_from_lsp_symbol(s) for s in self._symbols_for_locations(lang_server, locations)]
+
+    @staticmethod
+    def _dedupe_symbol_references(symbols: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str | None, str | None, str | None]] = set()
+        for symbol in symbols:
+            key = (
+                symbol.get("relative_path"),
+                symbol.get("name_path"),
+                symbol.get("kind"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(symbol)
+        return deduped
 
     def _reference_results_by_file(self, references: list[Any]) -> dict[str, dict[str, list[dict[str, Any]]]]:
         grouped: dict[str, dict[str, list[dict[str, Any]]]] = {}
@@ -374,15 +348,38 @@ class Bridge:
             grouped.setdefault(ref_relative_path, {}).setdefault(str(ref_dict.get("kind", "Unknown")), []).append(ref_dict)
         return grouped
 
+    def _resolve_all_source_positions(self, relative_path: str, code_snippet: str, symbol_text: str) -> list[tuple[int, int]]:
+        path = Path(self._agent().get_active_project_or_raise().project_root) / relative_path
+        content = path.read_text(encoding="utf-8")
+        starts = self._find_all_offsets(content, code_snippet)
+        positions: list[tuple[int, int]] = []
+        for start in starts:
+            target_start = code_snippet.find(symbol_text)
+            if target_start == -1:
+                raise ValueError("symbol_text was not found inside code_snippet.")
+            if code_snippet.find(symbol_text, target_start + 1) != -1:
+                raise ValueError("symbol_text must occur exactly once inside code_snippet. Use a smaller code_snippet around the symbol if needed.")
+            positions.append(self._line_col_for_offset(content, start + target_start))
+        return positions
+
     @staticmethod
-    def _reference_counts_by_file(references: list[Any]) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for ref in references:
-            ref_relative_path = ref.symbol.location.relative_path
-            if ref_relative_path is None:
-                continue
-            counts[ref_relative_path] = counts.get(ref_relative_path, 0) + 1
-        return counts
+    def _find_all_offsets(content: str, needle: str) -> list[int]:
+        if not needle:
+            raise ValueError("code_snippet must not be empty.")
+        starts: list[int] = []
+        start = content.find(needle)
+        while start != -1:
+            starts.append(start)
+            start = content.find(needle, start + 1)
+        return starts
+
+    @staticmethod
+    def _line_col_for_offset(content: str, offset: int) -> tuple[int, int]:
+        before = content[:offset]
+        line = before.count("\n")
+        last_newline = before.rfind("\n")
+        col = offset if last_newline == -1 else offset - last_newline - 1
+        return line, col
 
     @staticmethod
     def _request_type_definition_locations(lang_server: Any, relative_path: str, line: int, column: int) -> list[Any]:
@@ -404,7 +401,7 @@ class Bridge:
         return request.normalize_response(response)
 
     @staticmethod
-    def _symbols_for_locations(lang_server: Any, locations: list[Any], include_body: bool) -> list[Any]:
+    def _symbols_for_locations(lang_server: Any, locations: list[Any]) -> list[Any]:
         symbols = []
         seen: set[tuple[str, int, int, int]] = set()
         for location in locations:
@@ -417,7 +414,7 @@ class Bridge:
                 relative_path,
                 start["line"],
                 start["character"],
-                include_body=include_body,
+                include_body=False,
                 body_factory=None,
             )
             if symbol is None or "location" not in symbol:
@@ -443,128 +440,6 @@ class Bridge:
             text += f"\n{cause}"
             cause = getattr(cause, "__cause__", None)
         return method in text and ("Unhandled method" in text or "-32601" in text)
-
-    def _resolve_position(
-        self,
-        relative_path: str,
-        *,
-        regex: str | None,
-        code_snippet: str | None,
-        symbol_text: str | None,
-        occurrence_index: int | None,
-    ) -> tuple[int, int]:
-        if regex is None and code_snippet is None:
-            raise ValueError("A regex with one capture group or code_snippet is required.")
-
-        path = Path(self._agent().get_active_project_or_raise().project_root) / relative_path
-        content = path.read_text(encoding="utf-8")
-
-        if code_snippet is not None:
-            offset = self._resolve_code_snippet_offset(content, code_snippet, symbol_text, occurrence_index)
-        else:
-            assert regex is not None
-            try:
-                matches = list(re.finditer(regex, content, flags=re.MULTILINE | re.DOTALL))
-            except re.error as exc:
-                raise ValueError(
-                    f"Invalid regex for find_declaration: {exc}. "
-                    "Prefer code_snippet plus symbol_text to avoid escaping issues."
-                ) from exc
-            match = self._select_position_match(matches, occurrence_index, "regex", content)
-            if len(match.groups()) != 1:
-                raise ValueError(
-                    f"Expected regex to contain exactly one capture group, got {len(match.groups())}. "
-                    "The capture group marks the exact symbol occurrence for the LSP cursor. "
-                    "Prefer code_snippet plus symbol_text if regex escaping is awkward."
-                )
-            offset = match.start(1)
-
-        before = content[:offset]
-        resolved_line = before.count("\n")
-        last_newline = before.rfind("\n")
-        resolved_col = offset if last_newline == -1 else offset - last_newline - 1
-        return resolved_line, resolved_col
-
-    @staticmethod
-    def _resolve_code_snippet_offset(content: str, code_snippet: str, symbol_text: str | None, occurrence_index: int | None) -> int:
-        starts = Bridge._find_all_offsets(content, code_snippet)
-        start = Bridge._select_offset(starts, occurrence_index, "code_snippet", content)
-
-        if symbol_text is None:
-            return start
-        target_start = code_snippet.find(symbol_text)
-        if target_start == -1:
-            raise ValueError("symbol_text was not found inside code_snippet.")
-        if code_snippet.find(symbol_text, target_start + 1) != -1:
-            raise ValueError("symbol_text must occur exactly once inside code_snippet. Use a smaller code_snippet around the symbol if needed.")
-        return start + target_start
-
-    @staticmethod
-    def _find_all_offsets(content: str, needle: str) -> list[int]:
-        if not needle:
-            raise ValueError("code_snippet must not be empty.")
-        starts: list[int] = []
-        start = content.find(needle)
-        while start != -1:
-            starts.append(start)
-            start = content.find(needle, start + 1)
-        return starts
-
-    @staticmethod
-    def _select_position_match(matches: list[re.Match[str]], occurrence_index: int | None, label: str, content: str) -> re.Match[str]:
-        offset = Bridge._select_offset([match.start(0) for match in matches], occurrence_index, label, content)
-        for match in matches:
-            if match.start(0) == offset:
-                return match
-        raise AssertionError("Selected offset did not correspond to a regex match.")
-
-    @staticmethod
-    def _select_offset(starts: list[int], occurrence_index: int | None, label: str, content: str) -> int:
-        if occurrence_index is not None:
-            if occurrence_index < 0:
-                raise ValueError("occurrence_index must be 0 or greater.")
-            if occurrence_index >= len(starts):
-                raise ValueError(f"{label} matched {len(starts)} occurrence(s), so occurrence_index {occurrence_index} is out of range.")
-            return starts[occurrence_index]
-
-        if len(starts) == 1:
-            return starts[0]
-        if len(starts) == 0:
-            raise ValueError(f"Expected {label} to match exactly once, got 0 matches.")
-
-        occurrences = Bridge._format_occurrences(content, starts)
-        raise ValueError(
-            f"Expected {label} to match exactly once, got {len(starts)} matches. "
-            "Provide a longer unique code_snippet or set occurrence_index to one of these 0-based occurrences:\n"
-            f"{occurrences}"
-        )
-
-    @staticmethod
-    def _format_occurrences(content: str, starts: list[int]) -> str:
-        lines = []
-        for index, start in enumerate(starts[:10]):
-            line, col = Bridge._line_col_for_offset(content, start)
-            snippet = Bridge._line_snippet_for_offset(content, start)
-            lines.append(f"{index}: line {line}, column {col}: {snippet}")
-        if len(starts) > 10:
-            lines.append(f"... {len(starts) - 10} more occurrences")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _line_col_for_offset(content: str, offset: int) -> tuple[int, int]:
-        before = content[:offset]
-        line = before.count("\n")
-        last_newline = before.rfind("\n")
-        col = offset if last_newline == -1 else offset - last_newline - 1
-        return line, col
-
-    @staticmethod
-    def _line_snippet_for_offset(content: str, offset: int) -> str:
-        line_start = content.rfind("\n", 0, offset) + 1
-        line_end = content.find("\n", offset)
-        if line_end == -1:
-            line_end = len(content)
-        return content[line_start:line_end].strip()
 
     def _symbol_retriever(self) -> Any:
         from serena.symbol import LanguageServerSymbolRetriever

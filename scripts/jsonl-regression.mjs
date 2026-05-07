@@ -12,13 +12,13 @@ const failedToolLog = path.join(packageRoot, ".serena-data", "failed-tool-calls.
 const expectedTools = [
   "get_symbols_overview",
   "find_symbol",
+  "get_symbol_from_snippet",
   "find_referencing_symbols",
   "find_declaration",
-  "find_type_definition",
   "find_implementations",
   "rename_symbol",
 ];
-const removedTools = ["get_diagnostics_for_file", "get_diagnostics_for_symbol"];
+const removedTools = ["get_diagnostics_for_file", "get_diagnostics_for_symbol", "find_type_definition"];
 
 let nextId = 1;
 let proc;
@@ -198,7 +198,7 @@ function request(method, params = {}, timeoutMs = 240000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);
-      reject(new Error(`Timed out waiting for ${method}.\n${stderr}`));
+      reject(new Error(`Timed out waiting for ${method}: ${JSON.stringify(payload)}.\n${stderr}`));
     }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
     proc.stdin.write(`${JSON.stringify(payload)}\n`);
@@ -237,9 +237,15 @@ async function run() {
 
   const symbol = stringify(await request("call_tool", {
     tool: "find_symbol",
-    args: { relative_path: "src/index.ts", name_path_pattern: "Greeter", depth: 1, include_body: true },
+    args: { relative_path: "src/index.ts", name_path_pattern: "Greeter", depth: 1 },
   }));
   assert(symbol.includes("Greeter") && symbol.includes("greet"), symbol);
+
+  const symbolFromSnippet = JSON.parse(await request("call_tool", {
+    tool: "get_symbol_from_snippet",
+    args: { relative_path: "src/usage.ts", code_snippet: '.greet("World")', symbol_text: "greet" },
+  }));
+  assert(symbolFromSnippet.matches.some((match) => match.name_path === "Greeter/greet"), JSON.stringify(symbolFromSnippet));
 
   const references = stringify(await request("call_tool", {
     tool: "find_referencing_symbols",
@@ -247,75 +253,50 @@ async function run() {
   }));
   assert(references.includes("src/usage.ts") || references.includes("useGreeting"), references);
 
-  const referencesBySnippet = stringify(await request("call_tool", {
-    tool: "find_referencing_symbols",
-    args: { relative_path: "src/index.ts", code_snippet: "class Greeter", symbol_text: "Greeter" },
-  }));
-  assert(referencesBySnippet.includes("src/usage.ts") || referencesBySnippet.includes("makeGreeting"), referencesBySnippet);
-
   const declaration = stringify(await request("call_tool", {
     tool: "find_declaration",
-    args: { relative_path: "src/usage.ts", code_snippet: '.greet("World")', symbol_text: "greet", include_body: true },
+    args: { relative_path: "src/index.ts", name_path: "Greeter/greet" },
   }));
   assert(declaration.includes("src/index.ts") && declaration.includes("greet"), declaration);
 
-  try {
-    await request("call_tool", {
-      tool: "find_declaration",
-      args: { relative_path: "src/usage.ts", code_snippet: "makeGreeting", symbol_text: "makeGreeting" },
-    });
-    throw new Error("Ambiguous find_declaration unexpectedly succeeded");
-  } catch (error) {
-    assert(String(error.message).includes("Expected code_snippet to match exactly once"), String(error.message));
-  }
-
-  const failureLog = await readFile(failedToolLog, "utf8");
-  const failureEntries = failureLog.trim().split("\n").map((line) => JSON.parse(line));
-  assert(failureEntries.length === 1, `Expected one failed tool log entry, got ${failureEntries.length}: ${failureLog}`);
-  assert(failureEntries[0].tool === "find_declaration", JSON.stringify(failureEntries[0]));
-  assert(failureEntries[0].failure_kind === "exception", JSON.stringify(failureEntries[0]));
-  assert(failureEntries[0].args.code_snippet === "makeGreeting", JSON.stringify(failureEntries[0]));
-
-  const declarationByOccurrence = stringify(await request("call_tool", {
-    tool: "find_declaration",
-    args: { relative_path: "src/usage.ts", code_snippet: "makeGreeting", symbol_text: "makeGreeting", occurrence_index: 1 },
-  }));
-  assert(declarationByOccurrence.includes("src/index.ts") && declarationByOccurrence.includes("makeGreeting"), declarationByOccurrence);
-
   const typeDefinition = stringify(await request("call_tool", {
-    tool: "find_type_definition",
-    args: { relative_path: "src/usage.ts", code_snippet: "namedGreeter: Greeter", symbol_text: "namedGreeter", include_body: true },
+    tool: "get_symbol_from_snippet",
+    args: { relative_path: "src/usage.ts", code_snippet: "namedGreeter: Greeter", symbol_text: "namedGreeter", resolve: "type_definition" },
   }));
   assert(typeDefinition.includes("Greeter") && typeDefinition.includes("src/index.ts"), typeDefinition);
 
   const implementations = stringify(await request("call_tool", {
     tool: "find_implementations",
-    args: { relative_path: "src/index.ts", name_path: "Runner/run", include_body: true },
+    args: { relative_path: "src/index.ts", name_path: "Runner/run" },
   }));
   assert(implementations.includes("ConcreteRunner") || implementations.includes("src/implementation.ts"), implementations);
 
-  const implementationsBySnippet = stringify(await request("call_tool", {
-    tool: "find_implementations",
-    args: { relative_path: "src/index.ts", code_snippet: "run(input: string): string;", symbol_text: "run", include_body: true },
-  }));
-  assert(implementationsBySnippet.includes("ConcreteRunner") || implementationsBySnippet.includes("src/implementation.ts"), implementationsBySnippet);
-
   const rename = stringify(await request("call_tool", {
     tool: "rename_symbol",
-    args: { relative_path: "src/rename-target.ts", code_snippet: "function renameMe(value: string)", symbol_text: "renameMe", new_name: "renamedBySerena" },
+    args: { relative_path: "src/rename-target.ts", name_path: "renameMe", new_name: "renamedBySerena" },
   }));
   const renamedTarget = await readFile(path.join(fixtureRoot, "src", "rename-target.ts"), "utf8");
   assert(rename.includes("renamedBySerena") || renamedTarget.includes("renamedBySerena"), rename);
   assert(renamedTarget.includes("renamedBySerena") && !renamedTarget.includes("renameMe"), renamedTarget);
 
+  const signalSymbol = JSON.parse(await request("call_tool", {
+    tool: "get_symbol_from_snippet",
+    args: { relative_path: "src/ambiguous-rename.ts", code_snippet: "function first(signal: string)", symbol_text: "first" },
+  }));
+  assert(signalSymbol.matches.length === 1, JSON.stringify(signalSymbol));
+
   const ambiguousRename = stringify(await request("call_tool", {
     tool: "rename_symbol",
-    args: { relative_path: "src/ambiguous-rename.ts", code_snippet: "function first(signal: string)", symbol_text: "signal", new_name: "firstSignal" },
+    args: {
+      relative_path: signalSymbol.matches[0].relative_path,
+      name_path: signalSymbol.matches[0].name_path,
+      new_name: "firstSignal",
+    },
   }));
   const ambiguousRenamed = await readFile(path.join(fixtureRoot, "src", "ambiguous-rename.ts"), "utf8");
   assert(ambiguousRename.includes("firstSignal") || ambiguousRenamed.includes("firstSignal"), ambiguousRename);
-  assert(ambiguousRenamed.includes("first(firstSignal: string)"), ambiguousRenamed);
-  assert(ambiguousRenamed.includes("return firstSignal.trim();"), ambiguousRenamed);
+  assert(ambiguousRenamed.includes("function firstSignal(signal: string)"), ambiguousRenamed);
+  assert(ambiguousRenamed.includes("return signal.trim();"), ambiguousRenamed);
   assert(ambiguousRenamed.includes("second(signal: string)"), ambiguousRenamed);
   assert(ambiguousRenamed.includes("return signal.toUpperCase();"), ambiguousRenamed);
 
@@ -332,9 +313,9 @@ async function run() {
 
   const finalFailureLog = await readFile(failedToolLog, "utf8");
   const finalFailureEntries = finalFailureLog.trim().split("\n").map((line) => JSON.parse(line));
-  assert(finalFailureEntries.length === 2, `Expected two failed tool log entries, got ${finalFailureEntries.length}: ${finalFailureLog}`);
-  assert(finalFailureEntries[1].tool === "find_implementations", JSON.stringify(finalFailureEntries[1]));
-  assert(finalFailureEntries[1].failure_kind === "error_result", JSON.stringify(finalFailureEntries[1]));
+  assert(finalFailureEntries.length === 1, `Expected one failed tool log entry, got ${finalFailureEntries.length}: ${finalFailureLog}`);
+  assert(finalFailureEntries[0].tool === "find_implementations", JSON.stringify(finalFailureEntries[0]));
+  assert(finalFailureEntries[0].failure_kind === "error_result", JSON.stringify(finalFailureEntries[0]));
 
   await stopBridge();
   console.log(`PASS jsonl regression fixture: ${fixtureRoot}`);

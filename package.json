@@ -21,7 +21,8 @@
     "test": "npm run typecheck && npm run test:jsonl"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.41"
+    "@sinclair/typebox": "^0.34.41",
+    "pyright": "^1.1.409"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "^0.73.0"

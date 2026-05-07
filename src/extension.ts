@@ -55,11 +55,11 @@ function cancelledToolResult() {
 const serenaPromptGuidelines = [
   "Call Serena LSP tools as pi tools by their exact underscore names; do not try to run Serena CLI commands such as `serena tools get-symbols-overview`.",
   "Use get_symbols_overview to inspect top-level symbols in a file before searching more narrowly.",
-  "Use find_symbol to retrieve a known symbol by Serena name path, optionally with children or source body.",
+  "Use find_symbol to retrieve a known symbol by Serena name path, optionally with children.",
+  "Use get_symbol_from_snippet to convert a concrete source occurrence into Serena-style relative_path and name_path values.",
   "Use find_referencing_symbols to find references to a symbol defined in a specific file.",
-  "Use find_declaration to resolve a source occurrence to its declaration; prefer a unique code_snippet plus symbol_text over regex when escaping would be error-prone.",
-  "Use find_type_definition on a variable or expression when you need the concrete type/class/interface behind that occurrence, not where the variable itself was declared.",
-  "If find_declaration reports multiple code_snippet or regex matches, retry with a more specific code_snippet or set occurrence_index using the line/column choices from the error.",
+  "Use get_symbol_from_snippet with resolve type_definition on a variable or expression when you need the concrete type/class/interface behind that occurrence.",
+  "If get_symbol_from_snippet returns multiple matches, inspect the returned body_location values with native read tools or retry with a more specific code_snippet.",
   "Use find_implementations to find concrete implementations of interface or abstract method symbols; this depends on active language server support and may report that the operation is unsupported.",
   "Use rename_symbol only when the user wants a real project mutation, because it applies the rename directly and may be rejected by the language server if the workspace has errors.",
 ];
