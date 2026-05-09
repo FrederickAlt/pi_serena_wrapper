@@ -29,11 +29,6 @@ NATIVE_TOOL_NAMES = {
     "find_referencing_symbols",
 }
 
-NATIVE_UNTRUNCATED_READ_TOOL_NAMES = {
-    "get_symbols_overview",
-    "find_symbol",
-}
-
 EXPOSED_TOOL_NAMES = [
     "get_symbols_overview",
     "find_symbol",
@@ -132,11 +127,131 @@ class Bridge:
     @staticmethod
     def _language_for_relative_path(relative_path: str) -> Any | None:
         suffix = Path(relative_path).suffix.lower()
-        if suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
-            return Bridge._language_enum().TYPESCRIPT
-        if suffix == ".py":
-            return Bridge._language_enum().PYTHON
-        return None
+        Language = Bridge._language_enum()
+        # Map file extensions to Serena Language enum values.
+        # For ambiguous extensions, we pick the most common language.
+        mapping = {
+            # TypeScript / JavaScript
+            ".ts": Language.TYPESCRIPT, ".tsx": Language.TYPESCRIPT,
+            ".js": Language.TYPESCRIPT, ".jsx": Language.TYPESCRIPT,
+            ".mjs": Language.TYPESCRIPT, ".cjs": Language.TYPESCRIPT,
+            ".mts": Language.TYPESCRIPT, ".cts": Language.TYPESCRIPT,
+            # Python
+            ".py": Language.PYTHON, ".pyi": Language.PYTHON,
+            # Java
+            ".java": Language.JAVA,
+            # C#
+            ".cs": Language.CSHARP,
+            # Rust
+            ".rs": Language.RUST,
+            # Go
+            ".go": Language.GO,
+            # Ruby
+            ".rb": Language.RUBY, ".erb": Language.RUBY,
+            # C / C++
+            ".cpp": Language.CPP, ".hpp": Language.CPP,
+            ".h": Language.CPP, ".c": Language.CPP,
+            ".cc": Language.CPP, ".cxx": Language.CPP,
+            ".hxx": Language.CPP,
+            # Kotlin
+            ".kt": Language.KOTLIN, ".kts": Language.KOTLIN,
+            # Swift
+            ".swift": Language.SWIFT,
+            # Dart
+            ".dart": Language.DART,
+            # PHP
+            ".php": Language.PHP,
+            # Bash / Shell
+            ".sh": Language.BASH, ".bash": Language.BASH,
+            # R
+            ".r": Language.R, ".R": Language.R,
+            ".Rmd": Language.R, ".Rnw": Language.R,
+            # Perl
+            ".pl": Language.PERL, ".pm": Language.PERL,
+            ".t": Language.PERL,
+            # Clojure
+            ".clj": Language.CLOJURE, ".cljs": Language.CLOJURE,
+            ".cljc": Language.CLOJURE, ".edn": Language.CLOJURE,
+            # Elixir
+            ".ex": Language.ELIXIR, ".exs": Language.ELIXIR,
+            # Elm
+            ".elm": Language.ELM,
+            # Terraform
+            ".tf": Language.TERRAFORM, ".tfvars": Language.TERRAFORM,
+            # Crystal
+            ".cr": Language.CRYSTAL,
+            # Zig
+            ".zig": Language.ZIG, ".zon": Language.ZIG,
+            # Lua
+            ".lua": Language.LUA,
+            # Luau
+            ".luau": Language.LUAU,
+            # Nix
+            ".nix": Language.NIX,
+            # Erlang
+            ".erl": Language.ERLANG, ".hrl": Language.ERLANG,
+            # OCaml
+            ".ml": Language.OCAML, ".mli": Language.OCAML,
+            ".re": Language.OCAML, ".rei": Language.OCAML,
+            # F#
+            ".fs": Language.FSHARP, ".fsx": Language.FSHARP,
+            ".fsi": Language.FSHARP,
+            # Rego
+            ".rego": Language.REGO,
+            # Scala
+            ".scala": Language.SCALA, ".sbt": Language.SCALA,
+            # Julia
+            ".jl": Language.JULIA,
+            # Fortran
+            ".f90": Language.FORTRAN, ".f95": Language.FORTRAN,
+            ".f03": Language.FORTRAN, ".f08": Language.FORTRAN,
+            ".f": Language.FORTRAN, ".for": Language.FORTRAN,
+            # Haskell
+            ".hs": Language.HASKELL, ".lhs": Language.HASKELL,
+            # Haxe
+            ".hx": Language.HAXE,
+            # Lean 4
+            ".lean": Language.LEAN4,
+            # Groovy
+            ".groovy": Language.GROOVY, ".gvy": Language.GROOVY,
+            # Vue
+            ".vue": Language.VUE,
+            # PowerShell
+            ".ps1": Language.POWERSHELL, ".psm1": Language.POWERSHELL,
+            ".psd1": Language.POWERSHELL,
+            # Pascal
+            ".pas": Language.PASCAL, ".pp": Language.PASCAL,
+            ".lpr": Language.PASCAL, ".dpr": Language.PASCAL,
+            # Solidity
+            ".sol": Language.SOLIDITY,
+            # HLSL
+            ".hlsl": Language.HLSL, ".hlsli": Language.HLSL,
+            ".fx": Language.HLSL, ".fxh": Language.HLSL,
+            ".cginc": Language.HLSL,
+            ".compute": Language.HLSL, ".shader": Language.HLSL,
+            ".glsl": Language.HLSL, ".vert": Language.HLSL,
+            ".frag": Language.HLSL, ".geom": Language.HLSL,
+            ".tesc": Language.HLSL, ".tese": Language.HLSL,
+            ".comp": Language.HLSL, ".wgsl": Language.HLSL,
+            # SystemVerilog
+            ".sv": Language.SYSTEMVERILOG, ".svh": Language.SYSTEMVERILOG,
+            ".v": Language.SYSTEMVERILOG, ".vh": Language.SYSTEMVERILOG,
+            # mIRC Scripting Language
+            ".mrc": Language.MSL,
+            # Markdown
+            ".md": Language.MARKDOWN, ".markdown": Language.MARKDOWN,
+            # JSON
+            ".json": Language.JSON, ".jsonc": Language.JSON,
+            # YAML
+            ".yaml": Language.YAML, ".yml": Language.YAML,
+            # TOML
+            ".toml": Language.TOML,
+            # MATLAB (.m is also used by Objective-C, but Serena supports MATLAB)
+            ".m": Language.MATLAB, ".mlx": Language.MATLAB, ".mlapp": Language.MATLAB,
+            # AL
+            ".al": Language.AL, ".dal": Language.AL,
+        }
+        return mapping.get(suffix)
 
     @staticmethod
     def _language_enum() -> Any:
@@ -237,7 +352,7 @@ class Bridge:
             truncated = len(parsed) > max_matches
             output = parsed[:max_matches]
         return json.dumps({
-            "matches": output,
+            "symbols": output,
             "truncated": truncated,
         }, ensure_ascii=False)
 
@@ -273,7 +388,7 @@ class Bridge:
                 matches.extend(self._symbol_references_for_locations(lang_server, locations))
 
         deduped_matches = self._dedupe_symbol_references(matches)
-        result: dict[str, Any] = {"matches": deduped_matches}
+        result: dict[str, Any] = {"symbols": deduped_matches}
         if not deduped_matches:
             deduped_locations = self._dedupe_locations(raw_locations)
             if deduped_locations:

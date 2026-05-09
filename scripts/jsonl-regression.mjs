@@ -261,7 +261,7 @@ async function run() {
 
   const symbol = stringify(await request("call_tool", {
     tool: "find_symbol",
-    args: { relative_path: "src/index.ts", name_path_pattern: "Greeter", depth: 1 },
+    args: { relative_path: "src/index.ts", name_path: "Greeter", depth: 1 },
   }));
   assert(symbol.includes("Greeter") && symbol.includes("greet"), symbol);
 
@@ -269,7 +269,7 @@ async function run() {
     tool: "get_symbol_from_snippet",
     args: { relative_path: "src/usage.ts", code_snippet: '.greet("World")', symbol_text: "greet" },
   }));
-  assert(symbolFromSnippet.matches.some((match) => match.name_path === "Greeter/greet"), JSON.stringify(symbolFromSnippet));
+  assert(symbolFromSnippet.symbols.some((match) => match.name_path === "Greeter/greet"), JSON.stringify(symbolFromSnippet));
 
   const references = stringify(await request("call_tool", {
     tool: "find_referencing_symbols",
@@ -297,8 +297,8 @@ async function run() {
       symbol_text: "Greeter",
     },
   }));
-  assert(Array.isArray(importSpecifier.matches), JSON.stringify(importSpecifier));
-  if (importSpecifier.matches.length === 0) {
+  assert(Array.isArray(importSpecifier.symbols), JSON.stringify(importSpecifier));
+  if (importSpecifier.symbols.length === 0) {
     assert(importSpecifier.unresolved?.reason === "external_or_unindexed_target" || importSpecifier.unresolved?.reason === "no_lsp_target", JSON.stringify(importSpecifier));
   }
 
@@ -326,7 +326,7 @@ async function run() {
     tool: "get_symbol_from_snippet",
     args: { relative_path: "src/ambiguous-rename.ts", code_snippet: "function first(signal: string)", symbol_text: "first" },
   }));
-  assert(signalSymbol.matches.length === 1, JSON.stringify(signalSymbol));
+  assert(signalSymbol.symbols.length === 1, JSON.stringify(signalSymbol));
 
   const filteredSnippetSymbol = JSON.parse(await request("call_tool", {
     tool: "get_symbol_from_snippet",
@@ -338,13 +338,13 @@ async function run() {
       column: 25,
     },
   }));
-  assert(filteredSnippetSymbol.matches.some((match) => match.name_path === "Greeter/greet"), JSON.stringify(filteredSnippetSymbol));
+  assert(filteredSnippetSymbol.symbols.some((match) => match.name_path === "Greeter/greet"), JSON.stringify(filteredSnippetSymbol));
 
   const ambiguousRename = stringify(await request("call_tool", {
     tool: "rename_symbol",
     args: {
-      relative_path: signalSymbol.matches[0].relative_path,
-      name_path: signalSymbol.matches[0].name_path,
+      relative_path: signalSymbol.symbols[0].relative_path,
+      name_path: signalSymbol.symbols[0].name_path,
       new_name: "firstSignal",
     },
   }));
