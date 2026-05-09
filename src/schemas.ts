@@ -1,4 +1,42 @@
+/**
+ * ============================================================================
+ * SYNC CONTRACT: tool-contracts.json (project root) is the single source of
+ * truth for all parameter types, required fields, and descriptions across the
+ * TypeScript ↔ Python seam.
+ *
+ * - The TypeBox schemas below MUST stay in sync with tool-contracts.json.
+ *   When changing a parameter, update BOTH files.
+ * - toolDescriptions is derived from tool-contracts.json at runtime to avoid
+ *   duplicating description strings.
+ * ============================================================================
+ */
+
 import { Type } from "@sinclair/typebox";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const contractPath = join(__dirname, "..", "tool-contracts.json");
+
+const require = createRequire(import.meta.url);
+interface ContractTool {
+  description: string;
+  params: {
+    type: "object";
+    properties: Record<string, { type: string; description?: string; enum?: string[]; items?: { type: string } }>;
+    required?: string[];
+  };
+}
+interface ToolContracts {
+  tools: Record<string, ContractTool>;
+}
+const contract: ToolContracts = require(contractPath);
+
+// ---------------------------------------------------------------------------
+// Shared reusable TypeBox fragments (mirrors the contract's common types)
+// ---------------------------------------------------------------------------
 
 const RelativePath = Type.String({
   description: "Path to a source file or directory, relative to the current project root.",
@@ -16,6 +54,11 @@ const NamePathLookup = {
   relative_path: RelativePath,
   name_path: NamePath,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Tool schemas — kept in TypeScript because TypeBox features (Type.Union,
+// Type.Literal, Type.Optional) do not translate 1:1 to JSON Schema.
+// ---------------------------------------------------------------------------
 
 export const toolSchemas = {
   get_symbols_overview: Type.Object({
@@ -70,15 +113,27 @@ export const toolSchemas = {
   }),
 } as const;
 
-export const toolDescriptions: Record<keyof typeof toolSchemas, string> = {
-  get_symbols_overview: "Get a Serena top-level symbol overview for a source file.",
-  find_symbol: "Search Serena's LSP symbol index by exact name path.",
-  get_symbol_from_snippet: "Resolve a concrete source occurrence to Serena-style symbol references.",
-  find_referencing_symbols: "Find symbols that reference a given Serena symbol.",
-  find_declaration: "Resolve the declaration/definition for a Serena symbol using Serena's LSP backend.",
-  find_implementations: "Find implementations for a symbol using Serena's LSP backend when the active language server supports it.",
-  rename_symbol: "Rename a symbol throughout the project using Serena's LSP refactoring.",
-};
+// ---------------------------------------------------------------------------
+// Tool descriptions — derived from tool-contracts.json at runtime.
+// Throws at startup if the contract is missing an entry.
+// ---------------------------------------------------------------------------
+
+function buildToolDescriptions(): Record<keyof typeof toolSchemas, string> {
+  const descriptions: Record<string, string> = {};
+  for (const name of Object.keys(toolSchemas) as Array<keyof typeof toolSchemas>) {
+    const entry = contract.tools[name];
+    if (!entry) {
+      throw new Error(
+        `tool-contracts.json is missing entry for "${name}". ` +
+        "Add the tool definition to the contract file.",
+      );
+    }
+    descriptions[name] = entry.description;
+  }
+  return descriptions as Record<keyof typeof toolSchemas, string>;
+}
+
+export const toolDescriptions = buildToolDescriptions();
 
 export type SerenaToolName = keyof typeof toolSchemas;
 

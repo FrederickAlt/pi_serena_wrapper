@@ -20,6 +20,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SERENA_HOME = PACKAGE_ROOT / ".serena-data"
 PROJECT_DATA_ROOT = PACKAGE_ROOT / ".serena-projects"
 FAILED_TOOL_LOG = SERENA_HOME / "failed-tool-calls.jsonl"
+CONTRACT_PATH = PACKAGE_ROOT / "tool-contracts.json"
 
 os.environ.setdefault("SERENA_HOME", str(SERENA_HOME))
 os.environ.setdefault("SERENA_USAGE_REPORTING", "false")
@@ -41,10 +42,125 @@ EXPOSED_TOOL_NAMES = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Contract loading and validation
+# ---------------------------------------------------------------------------
+
+def _load_contracts() -> dict[str, Any]:
+    """Load and return the tool-contracts.json dictionary."""
+    with open(CONTRACT_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+try:
+    import jsonschema
+    import jsonschema.exceptions
+
+    _HAS_JSONSCHEMA = True
+except ImportError:
+    _HAS_JSONSCHEMA = False
+
+
+def validate_args(tool_name: str, args: dict[str, Any], contracts: dict[str, Any]) -> None:
+    """Validate *args* against the tool's param schema from tool-contracts.json.
+
+    Raises ``ValueError`` with a descriptive message on failure covering:
+    - Missing required params
+    - Wrong types
+    - Unknown params (params not defined in the contract)
+    """
+    tools = contracts.get("tools", {})
+    tool_entry = tools.get(tool_name)
+    if tool_entry is None:
+        raise ValueError(f"No contract definition found for tool '{tool_name}'.")
+
+    param_schema = tool_entry.get("params", {})
+    properties = param_schema.get("properties", {})
+    required = set(param_schema.get("required", []))
+
+    # 1. Check for unknown params
+    known_keys = set(properties.keys())
+    unknown_keys = set(args.keys()) - known_keys
+    if unknown_keys:
+        raise ValueError(
+            f"Tool '{tool_name}': unknown parameter(s): {', '.join(sorted(unknown_keys))}. "
+            f"Allowed parameters: {', '.join(sorted(known_keys))}."
+        )
+
+    # 2. Check for missing required params
+    missing = required - set(args.keys())
+    if missing:
+        raise ValueError(
+            f"Tool '{tool_name}': missing required parameter(s): {', '.join(sorted(missing))}."
+        )
+
+    # 3. Type validation
+    type_map = {
+        "string": str,
+        "number": (int, float),
+        "integer": int,
+        "boolean": bool,
+        "array": (list, tuple),
+        "object": dict,
+    }
+
+    for key, value in args.items():
+        prop_def = properties.get(key, {})
+        expected_type = prop_def.get("type")
+        if expected_type is None:
+            continue
+
+        if value is None:
+            continue
+
+        python_type = type_map.get(expected_type)
+        if python_type is None:
+            continue
+
+        if not isinstance(value, python_type):
+            if expected_type == "number" and isinstance(value, int):
+                continue
+            actual = type(value).__name__
+            raise ValueError(
+                f"Tool '{tool_name}': parameter '{key}' expected type '{expected_type}' "
+                f"but got '{actual}'."
+            )
+
+        allowed_enum = prop_def.get("enum")
+        if allowed_enum is not None and value not in allowed_enum:
+            raise ValueError(
+                f"Tool '{tool_name}': parameter '{key}' must be one of {allowed_enum}, "
+                f"got '{value}'."
+            )
+
+        if expected_type == "array":
+            items_def = prop_def.get("items", {})
+            items_type = items_def.get("type")
+            if items_type:
+                items_python_type = type_map.get(items_type)
+                if items_python_type:
+                    for i, item in enumerate(value):
+                        if not isinstance(item, items_python_type):
+                            if items_type == "number" and isinstance(item, int):
+                                continue
+                            raise ValueError(
+                                f"Tool '{tool_name}': parameter '{key}' item at index {i} "
+                                f"expected type '{items_type}' but got '{type(item).__name__}'."
+                            )
+
+
 class Bridge:
     def __init__(self) -> None:
         self.agent: Any | None = None
         self.cwd: str | None = None
+        self._contracts: dict[str, Any] | None = None
+
+    @property
+    def contracts(self) -> dict[str, Any]:
+        """Lazily load tool-contracts.json."""
+        if self._contracts is None:
+            self._contracts = _load_contracts()
+        return self._contracts
 
     def init(self, cwd: str) -> dict[str, Any]:
         try:
@@ -134,6 +250,10 @@ class Bridge:
     def call_tool(self, tool: str, args: dict[str, Any]) -> Any:
         if tool not in EXPOSED_TOOL_NAMES:
             raise ValueError(f"Unknown Serena pi tool: {tool}")
+
+        # Validate args against the shared contract BEFORE dispatching.
+        validate_args(tool, args, self.contracts)
+
         try:
             if "relative_path" in args and isinstance(args["relative_path"], str) and args["relative_path"]:
                 args["relative_path"] = self._normalize_relative_path(self.cwd, args["relative_path"])
