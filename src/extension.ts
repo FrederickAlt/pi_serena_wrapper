@@ -67,13 +67,11 @@ const serenaPromptGuidelines = [
 ];
 
 export default function (pi: ExtensionAPI) {
-  const clients = new Map<string, SerenaBridgeClient>();
+  let client: SerenaBridgeClient | undefined;
 
-  function clientFor(cwd: string): SerenaBridgeClient {
-    let client = clients.get(cwd);
+  function clientFor(_cwd: string): SerenaBridgeClient {
     if (!client) {
       client = new SerenaBridgeClient();
-      clients.set(cwd, client);
     }
     return client;
   }
@@ -101,11 +99,10 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  pi.on("session_shutdown", async (_event, ctx) => {
-    const client = clients.get(ctx.cwd);
+  pi.on("session_shutdown", async (_event, _ctx) => {
     if (client) {
       await client.shutdown();
-      clients.delete(ctx.cwd);
+      client = undefined;
     }
   });
 }

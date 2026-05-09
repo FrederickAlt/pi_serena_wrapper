@@ -17,7 +17,7 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:jsonl": "node scripts/jsonl-regression.mjs",
+    "test:jsonl": "node --import @mariozechner/jiti/register scripts/jsonl-regression.ts",
     "test": "npm run typecheck && npm run test:jsonl"
   },
   "dependencies": {
