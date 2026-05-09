@@ -5,15 +5,16 @@ from __future__ import annotations
 
 import json
 import hashlib
-import re
-from importlib import import_module
-from importlib.metadata import PackageNotFoundError, version
 import os
 import sys
 import traceback
+from importlib import import_module
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
+
+from source_positions import resolve_all_source_positions
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SERENA_HOME = PACKAGE_ROOT / ".serena-data"
@@ -112,151 +113,6 @@ class Bridge:
         folder_name = Path(project_root).name or "project"
         return PROJECT_DATA_ROOT / f"{folder_name}-{digest}"
 
-    def _ensure_language_for_args(self, args: dict[str, Any]) -> None:
-        relative_path = args.get("relative_path")
-        if not isinstance(relative_path, str) or relative_path == "":
-            return
-        language = self._language_for_relative_path(relative_path)
-        if language is None:
-            return
-        project = self._agent().get_active_project_or_raise()
-        if language in project.project_config.languages:
-            return
-        project.add_language(language)
-
-    @staticmethod
-    def _language_for_relative_path(relative_path: str) -> Any | None:
-        suffix = Path(relative_path).suffix.lower()
-        Language = Bridge._language_enum()
-        # Map file extensions to Serena Language enum values.
-        # For ambiguous extensions, we pick the most common language.
-        mapping = {
-            # TypeScript / JavaScript
-            ".ts": Language.TYPESCRIPT, ".tsx": Language.TYPESCRIPT,
-            ".js": Language.TYPESCRIPT, ".jsx": Language.TYPESCRIPT,
-            ".mjs": Language.TYPESCRIPT, ".cjs": Language.TYPESCRIPT,
-            ".mts": Language.TYPESCRIPT, ".cts": Language.TYPESCRIPT,
-            # Python
-            ".py": Language.PYTHON, ".pyi": Language.PYTHON,
-            # Java
-            ".java": Language.JAVA,
-            # C#
-            ".cs": Language.CSHARP,
-            # Rust
-            ".rs": Language.RUST,
-            # Go
-            ".go": Language.GO,
-            # Ruby
-            ".rb": Language.RUBY, ".erb": Language.RUBY,
-            # C / C++
-            ".cpp": Language.CPP, ".hpp": Language.CPP,
-            ".h": Language.CPP, ".c": Language.CPP,
-            ".cc": Language.CPP, ".cxx": Language.CPP,
-            ".hxx": Language.CPP,
-            # Kotlin
-            ".kt": Language.KOTLIN, ".kts": Language.KOTLIN,
-            # Swift
-            ".swift": Language.SWIFT,
-            # Dart
-            ".dart": Language.DART,
-            # PHP
-            ".php": Language.PHP,
-            # Bash / Shell
-            ".sh": Language.BASH, ".bash": Language.BASH,
-            # R
-            ".r": Language.R, ".R": Language.R,
-            ".Rmd": Language.R, ".Rnw": Language.R,
-            # Perl
-            ".pl": Language.PERL, ".pm": Language.PERL,
-            ".t": Language.PERL,
-            # Clojure
-            ".clj": Language.CLOJURE, ".cljs": Language.CLOJURE,
-            ".cljc": Language.CLOJURE, ".edn": Language.CLOJURE,
-            # Elixir
-            ".ex": Language.ELIXIR, ".exs": Language.ELIXIR,
-            # Elm
-            ".elm": Language.ELM,
-            # Terraform
-            ".tf": Language.TERRAFORM, ".tfvars": Language.TERRAFORM,
-            # Crystal
-            ".cr": Language.CRYSTAL,
-            # Zig
-            ".zig": Language.ZIG, ".zon": Language.ZIG,
-            # Lua
-            ".lua": Language.LUA,
-            # Luau
-            ".luau": Language.LUAU,
-            # Nix
-            ".nix": Language.NIX,
-            # Erlang
-            ".erl": Language.ERLANG, ".hrl": Language.ERLANG,
-            # OCaml
-            ".ml": Language.OCAML, ".mli": Language.OCAML,
-            ".re": Language.OCAML, ".rei": Language.OCAML,
-            # F#
-            ".fs": Language.FSHARP, ".fsx": Language.FSHARP,
-            ".fsi": Language.FSHARP,
-            # Rego
-            ".rego": Language.REGO,
-            # Scala
-            ".scala": Language.SCALA, ".sbt": Language.SCALA,
-            # Julia
-            ".jl": Language.JULIA,
-            # Fortran
-            ".f90": Language.FORTRAN, ".f95": Language.FORTRAN,
-            ".f03": Language.FORTRAN, ".f08": Language.FORTRAN,
-            ".f": Language.FORTRAN, ".for": Language.FORTRAN,
-            # Haskell
-            ".hs": Language.HASKELL, ".lhs": Language.HASKELL,
-            # Haxe
-            ".hx": Language.HAXE,
-            # Lean 4
-            ".lean": Language.LEAN4,
-            # Groovy
-            ".groovy": Language.GROOVY, ".gvy": Language.GROOVY,
-            # Vue
-            ".vue": Language.VUE,
-            # PowerShell
-            ".ps1": Language.POWERSHELL, ".psm1": Language.POWERSHELL,
-            ".psd1": Language.POWERSHELL,
-            # Pascal
-            ".pas": Language.PASCAL, ".pp": Language.PASCAL,
-            ".lpr": Language.PASCAL, ".dpr": Language.PASCAL,
-            # Solidity
-            ".sol": Language.SOLIDITY,
-            # HLSL
-            ".hlsl": Language.HLSL, ".hlsli": Language.HLSL,
-            ".fx": Language.HLSL, ".fxh": Language.HLSL,
-            ".cginc": Language.HLSL,
-            ".compute": Language.HLSL, ".shader": Language.HLSL,
-            ".glsl": Language.HLSL, ".vert": Language.HLSL,
-            ".frag": Language.HLSL, ".geom": Language.HLSL,
-            ".tesc": Language.HLSL, ".tese": Language.HLSL,
-            ".comp": Language.HLSL, ".wgsl": Language.HLSL,
-            # SystemVerilog
-            ".sv": Language.SYSTEMVERILOG, ".svh": Language.SYSTEMVERILOG,
-            ".v": Language.SYSTEMVERILOG, ".vh": Language.SYSTEMVERILOG,
-            # mIRC Scripting Language
-            ".mrc": Language.MSL,
-            # Markdown
-            ".md": Language.MARKDOWN, ".markdown": Language.MARKDOWN,
-            # JSON
-            ".json": Language.JSON, ".jsonc": Language.JSON,
-            # YAML
-            ".yaml": Language.YAML, ".yml": Language.YAML,
-            # TOML
-            ".toml": Language.TOML,
-            # MATLAB (.m is also used by Objective-C, but Serena supports MATLAB)
-            ".m": Language.MATLAB, ".mlx": Language.MATLAB, ".mlapp": Language.MATLAB,
-            # AL
-            ".al": Language.AL, ".dal": Language.AL,
-        }
-        return mapping.get(suffix)
-
-    @staticmethod
-    def _language_enum() -> Any:
-        return import_module("solidlsp.ls_config").Language
-
     @staticmethod
     def _normalize_relative_path(base_dir: str, given_path: str) -> str:
         """Convert given_path to a path relative to base_dir.
@@ -281,7 +137,6 @@ class Bridge:
         try:
             if "relative_path" in args and isinstance(args["relative_path"], str) and args["relative_path"]:
                 args["relative_path"] = self._normalize_relative_path(self.cwd, args["relative_path"])
-            self._ensure_language_for_args(args)
             if "relative_path" in args and isinstance(args.get("relative_path"), str) and args["relative_path"]:
                 full_path = Path(self.cwd) / args["relative_path"]
                 if not full_path.exists():
@@ -368,7 +223,9 @@ class Bridge:
         if resolve not in {"declaration", "type_definition"}:
             raise ValueError("resolve must be either 'declaration' or 'type_definition'.")
 
-        positions = self._resolve_all_source_positions(relative_path, code_snippet, symbol_text, line, column)
+        path = Path(self._agent().get_active_project_or_raise().project_root) / relative_path
+        file_content = path.read_text(encoding="utf-8")
+        positions = resolve_all_source_positions(file_content, code_snippet, symbol_text, line, column)
         retriever = self._symbol_retriever()
         lang_server = retriever.get_language_server(relative_path)
         matches: list[dict[str, Any]] = []
@@ -562,104 +419,6 @@ class Bridge:
             grouped.setdefault(ref_relative_path, {}).setdefault(str(ref_dict.get("kind", "Unknown")), []).append(ref_dict)
         return grouped
 
-    def _resolve_all_source_positions(
-        self,
-        relative_path: str,
-        code_snippet: str,
-        symbol_text: str,
-        line: int | None = None,
-        column: int | None = None,
-    ) -> list[tuple[int, int]]:
-        path = Path(self._agent().get_active_project_or_raise().project_root) / relative_path
-        content = path.read_text(encoding="utf-8")
-        starts = self._find_all_offsets(content, code_snippet)
-        # Convert from 1-based (user-facing) to 0-based (internal)
-        adjusted_line = line - 1 if line is not None else None
-        adjusted_column = column - 1 if column is not None else None
-        positions: list[tuple[int, int]] = []
-        token_pattern = re.compile(r'\b' + re.escape(symbol_text) + r'\b')
-        for start in starts:
-            target_matches = list(token_pattern.finditer(code_snippet))
-            if len(target_matches) == 0:
-                raise ValueError(
-                    f"symbol_text '{symbol_text}' was not found as a complete token "
-                    "inside code_snippet. Use a larger symbol_text or a smaller "
-                    "code_snippet around the symbol if needed."
-                )
-            if len(target_matches) > 1:
-                raise ValueError(
-                    f"symbol_text '{symbol_text}' appears {len(target_matches)} times "
-                    "as a complete token inside code_snippet. Use a smaller "
-                    "code_snippet around the symbol if needed."
-                )
-            target_start = target_matches[0].start()
-            snippet_start_line, snippet_start_col = self._line_col_for_offset(content, start)
-            snippet_end_line, snippet_end_col = self._line_col_for_offset(content, start + len(code_snippet))
-            symbol_offset = start + target_start
-            symbol_line, symbol_col = self._line_col_for_offset(content, symbol_offset)
-            symbol_end_line, symbol_end_col = self._line_col_for_offset(content, symbol_offset + len(symbol_text))
-            if adjusted_line is not None and not self._position_spans_line(
-                snippet_start_line,
-                snippet_end_line,
-                adjusted_line,
-            ):
-                continue
-            if adjusted_column is not None:
-                if adjusted_line is None:
-                    raise ValueError("line must be provided when column is provided.")
-                if not self._position_contains_line_column(symbol_line, symbol_col, symbol_end_line, symbol_end_col, adjusted_line, adjusted_column):
-                    continue
-            positions.append((symbol_line, symbol_col))
-        if not positions:
-            if line is not None or column is not None:
-                raise ValueError("code_snippet was found, but no occurrence matched the provided line/column filters. Line/column values are 1-based.")
-            raise ValueError("No source positions were resolved from code_snippet and symbol_text.")
-        return positions
-
-    @staticmethod
-    def _position_spans_line(start_line: int, end_line: int, line: int) -> bool:
-        return start_line <= line <= end_line
-
-    @staticmethod
-    def _position_contains_line_column(
-        start_line: int,
-        start_col: int,
-        end_line: int,
-        end_col: int,
-        line: int,
-        column: int,
-    ) -> bool:
-        if line < start_line or line > end_line:
-            return False
-        if start_line == end_line:
-            return start_col <= column < end_col
-        if line == start_line:
-            return column >= start_col
-        if line == end_line:
-            return column < end_col
-        return True
-
-    @staticmethod
-    def _find_all_offsets(content: str, needle: str) -> list[int]:
-        if not needle:
-            raise ValueError("code_snippet must not be empty.")
-        starts: list[int] = []
-        start = content.find(needle)
-        while start != -1:
-            starts.append(start)
-            start = content.find(needle, start + 1)
-        if not starts:
-            raise ValueError("code_snippet was not found in relative_path.")
-        return starts
-
-    @staticmethod
-    def _line_col_for_offset(content: str, offset: int) -> tuple[int, int]:
-        before = content[:offset]
-        line = before.count("\n")
-        last_newline = before.rfind("\n")
-        col = offset if last_newline == -1 else offset - last_newline - 1
-        return line, col
-
     @staticmethod
     def _request_type_definition_locations(lang_server: Any, relative_path: str, line: int, column: int) -> list[Any]:
         if not lang_server.server_started:
@@ -797,12 +556,32 @@ class Bridge:
         return str(value)
 
 
-def respond(request_id: Any, ok: bool, result: Any = None, error: str | None = None) -> None:
+def _error_is_retryable(exc: Exception) -> bool:
+    """Determine whether the error might be resolved by reinstalling Serena."""
+    text = f"{exc}"
+    return (
+        "serena-agent" in text
+        and ("not installed" in text or "incompatible" in text or "missing" in text)
+    ) or "Could not import a compatible" in text
+
+
+def respond(
+    request_id: Any,
+    ok: bool,
+    result: Any = None,
+    error: str | None = None,
+    *,
+    retryable: bool = False,
+) -> None:
     payload: dict[str, Any] = {"id": request_id, "ok": ok}
     if ok:
         payload["result"] = result
     else:
-        payload["error"] = error
+        payload["error"] = {
+            "kind": "error",
+            "message": error or "Unknown error",
+            "retryable": retryable,
+        }
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
@@ -831,7 +610,8 @@ def main() -> int:
             respond(request_id, True, result)
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
-            respond(request_id, False, error=f"{exc.__class__.__name__}: {exc}")
+            retryable = _error_is_retryable(exc)
+            respond(request_id, False, error=f"{exc.__class__.__name__}: {exc}", retryable=retryable)
     return 0
 
 
