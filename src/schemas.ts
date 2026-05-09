@@ -24,11 +24,11 @@ export const toolSchemas = {
   }),
 
   find_symbol: Type.Object({
-    name_path_pattern: Type.String({ description: "Name path pattern to search for." }),
+    name_path: Type.String({ description: "Serena symbol name path to search for. Exact match only." }),
     depth: Type.Optional(Type.Number({ description: "Descendant depth to include. Default 0." })),
     relative_path: Type.Optional(RelativePath),
     kinds: KindList,
-    max_matches: Type.Optional(Type.Number({ description: "Maximum matches before Serena returns a shortened result." })),
+    max_matches: Type.Optional(Type.Number({ description: "Maximum number of symbol matches to return. -1 means unlimited." })),
   }),
 
   get_symbol_from_snippet: Type.Object({
@@ -72,7 +72,7 @@ export const toolSchemas = {
 
 export const toolDescriptions: Record<keyof typeof toolSchemas, string> = {
   get_symbols_overview: "Get a Serena top-level symbol overview for a source file.",
-  find_symbol: "Search Serena's LSP symbol index by name path pattern.",
+  find_symbol: "Search Serena's LSP symbol index by exact name path.",
   get_symbol_from_snippet: "Resolve a concrete source occurrence to Serena-style symbol references.",
   find_referencing_symbols: "Find symbols that reference a given Serena symbol.",
   find_declaration: "Resolve the declaration/definition for a Serena symbol using Serena's LSP backend.",

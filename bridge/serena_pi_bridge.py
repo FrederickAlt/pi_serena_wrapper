@@ -183,14 +183,14 @@ class Bridge:
 
     def find_symbol(
         self,
-        name_path_pattern: str,
+        name_path: str,
         depth: int = 0,
         relative_path: str = "",
         kinds: list[int] | None = None,
         max_matches: int = -1,
     ) -> str:
-        return self._agent().get_tool_by_name("find_symbol").apply_ex(
-            name_path_pattern=name_path_pattern,
+        raw = self._agent().get_tool_by_name("find_symbol").apply_ex(
+            name_path_pattern=name_path,
             depth=depth,
             relative_path=relative_path,
             include_body=False,
@@ -198,9 +198,24 @@ class Bridge:
             include_kinds=kinds or [],
             exclude_kinds=[],
             substring_matching=False,
-            max_matches=max_matches,
+            max_matches=-1,
             max_answer_chars=-1,
         )
+        if not isinstance(raw, str):
+            raw = self._json(raw)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+        if not isinstance(parsed, list):
+            parsed = [parsed] if parsed else []
+        truncated = max_matches > 0 and len(parsed) > max_matches
+        output = parsed[:max_matches] if truncated else parsed
+        return json.dumps({
+            "matches": output,
+            "truncated": truncated,
+            "total_matches": len(parsed),
+        }, ensure_ascii=False)
 
     def get_symbol_from_snippet(
         self,
