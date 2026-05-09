@@ -141,6 +141,20 @@ class Bridge:
     def _language_enum() -> Any:
         return import_module("solidlsp.ls_config").Language
 
+    @staticmethod
+    def _normalize_relative_path(base_dir: str, given_path: str) -> str:
+        """Convert given_path to a path relative to base_dir.
+
+        Handles absolute paths, `./` prefixes, `../` relative paths,
+        and returns the canonical project-root-relative form.
+        """
+        if not given_path:
+            return given_path
+        p = Path(given_path)
+        if not p.is_absolute():
+            p = Path(base_dir) / p
+        return os.path.relpath(str(p.resolve()), str(Path(base_dir).resolve()))
+
     def list_tools(self) -> list[str]:
         self._agent()
         return EXPOSED_TOOL_NAMES
@@ -149,7 +163,13 @@ class Bridge:
         if tool not in EXPOSED_TOOL_NAMES:
             raise ValueError(f"Unknown Serena pi tool: {tool}")
         try:
+            if "relative_path" in args and isinstance(args["relative_path"], str) and args["relative_path"]:
+                args["relative_path"] = self._normalize_relative_path(self.cwd, args["relative_path"])
             self._ensure_language_for_args(args)
+            if "relative_path" in args and isinstance(args.get("relative_path"), str) and args["relative_path"]:
+                full_path = Path(self.cwd) / args["relative_path"]
+                if not full_path.exists():
+                    raise RuntimeError(f"File not found: {args['relative_path']}")
             if tool == "get_symbols_overview":
                 result = self._agent().get_tool_by_name(tool).apply_ex(max_answer_chars=-1, **args)
             elif tool == "find_symbol":
@@ -214,7 +234,6 @@ class Bridge:
         return json.dumps({
             "matches": output,
             "truncated": truncated,
-            "total_matches": len(parsed),
         }, ensure_ascii=False)
 
     def get_symbol_from_snippet(
