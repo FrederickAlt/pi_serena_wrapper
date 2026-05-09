@@ -40,10 +40,10 @@ export const toolSchemas = {
       description: "Exact symbol text inside code_snippet where the LSP cursor should be placed.",
     }),
     line: Type.Optional(Type.Number({
-      description: "Optional 0-based line filter. Only snippet occurrences spanning this line are considered.",
+      description: "Optional 1-based line filter. Only snippet occurrences spanning this line are considered.",
     })),
     column: Type.Optional(Type.Number({
-      description: "Optional 0-based column filter. Requires line; only occurrences whose symbol_text covers this column are considered.",
+      description: "Optional 1-based column filter. Requires line; only occurrences whose symbol_text covers this column are considered.",
     })),
     resolve: Type.Optional(Type.Union([
       Type.Literal("declaration"),

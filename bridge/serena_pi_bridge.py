@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 import os
@@ -229,8 +230,12 @@ class Bridge:
             return raw
         if not isinstance(parsed, list):
             parsed = [parsed] if parsed else []
-        truncated = max_matches > 0 and len(parsed) > max_matches
-        output = parsed[:max_matches] if truncated else parsed
+        if max_matches == -1:
+            output = parsed
+            truncated = False
+        else:
+            truncated = len(parsed) > max_matches
+            output = parsed[:max_matches]
         return json.dumps({
             "matches": output,
             "truncated": truncated,
@@ -453,33 +458,46 @@ class Bridge:
         path = Path(self._agent().get_active_project_or_raise().project_root) / relative_path
         content = path.read_text(encoding="utf-8")
         starts = self._find_all_offsets(content, code_snippet)
+        # Convert from 1-based (user-facing) to 0-based (internal)
+        adjusted_line = line - 1 if line is not None else None
+        adjusted_column = column - 1 if column is not None else None
         positions: list[tuple[int, int]] = []
+        token_pattern = re.compile(r'\b' + re.escape(symbol_text) + r'\b')
         for start in starts:
-            target_start = code_snippet.find(symbol_text)
-            if target_start == -1:
-                raise ValueError("symbol_text was not found inside code_snippet.")
-            if code_snippet.find(symbol_text, target_start + 1) != -1:
-                raise ValueError("symbol_text must occur exactly once inside code_snippet. Use a smaller code_snippet around the symbol if needed.")
+            target_matches = list(token_pattern.finditer(code_snippet))
+            if len(target_matches) == 0:
+                raise ValueError(
+                    f"symbol_text '{symbol_text}' was not found as a complete token "
+                    "inside code_snippet. Use a larger symbol_text or a smaller "
+                    "code_snippet around the symbol if needed."
+                )
+            if len(target_matches) > 1:
+                raise ValueError(
+                    f"symbol_text '{symbol_text}' appears {len(target_matches)} times "
+                    "as a complete token inside code_snippet. Use a smaller "
+                    "code_snippet around the symbol if needed."
+                )
+            target_start = target_matches[0].start()
             snippet_start_line, snippet_start_col = self._line_col_for_offset(content, start)
             snippet_end_line, snippet_end_col = self._line_col_for_offset(content, start + len(code_snippet))
             symbol_offset = start + target_start
             symbol_line, symbol_col = self._line_col_for_offset(content, symbol_offset)
             symbol_end_line, symbol_end_col = self._line_col_for_offset(content, symbol_offset + len(symbol_text))
-            if line is not None and not self._position_spans_line(
+            if adjusted_line is not None and not self._position_spans_line(
                 snippet_start_line,
                 snippet_end_line,
-                line,
+                adjusted_line,
             ):
                 continue
-            if column is not None:
-                if line is None:
+            if adjusted_column is not None:
+                if adjusted_line is None:
                     raise ValueError("line must be provided when column is provided.")
-                if not self._position_contains_line_column(symbol_line, symbol_col, symbol_end_line, symbol_end_col, line, column):
+                if not self._position_contains_line_column(symbol_line, symbol_col, symbol_end_line, symbol_end_col, adjusted_line, adjusted_column):
                     continue
             positions.append((symbol_line, symbol_col))
         if not positions:
             if line is not None or column is not None:
-                raise ValueError("code_snippet was found, but no occurrence matched the provided line/column filters.")
+                raise ValueError("code_snippet was found, but no occurrence matched the provided line/column filters. Line/column values are 1-based.")
             raise ValueError("No source positions were resolved from code_snippet and symbol_text.")
         return positions
 
