@@ -47,6 +47,7 @@ export default function (pi: ExtensionAPI) {
         content: [
           { type: "text" as const, text },
         ],
+        details: {},
       };
     },
   });
@@ -156,6 +157,7 @@ export default function (pi: ExtensionAPI) {
       const text = await bridge.callTool("get_docstring", params as Record<string, unknown>, signal) as string;
       return {
         content: [{ type: "text" as const, text }],
+        details: {},
       };
     },
   });
@@ -177,6 +179,7 @@ export default function (pi: ExtensionAPI) {
       const text = await bridge.callTool("rename_symbol", params as Record<string, unknown>, signal) as string;
       return {
         content: [{ type: "text" as const, text }],
+        details: {},
       };
     },
   });

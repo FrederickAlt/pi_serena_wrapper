@@ -92,13 +92,6 @@ export class SerenaBridgeClient {
     return result;
   }
 
-  async callTool(toolName: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    if (!this.initializedFor) {
-      throw new Error("Bridge has not been initialized. Call init first.");
-    }
-    return this.transport.send("call_tool", { tool: toolName, args: params }, signal);
-  }
-
   async shutdown(): Promise<void> {
     if (!this.transport.isAlive()) return;
     try {
