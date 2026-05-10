@@ -198,3 +198,148 @@ def resolve_unique_symbol(
         name_path,
         "No symbol matches this name_path in the project.",
     )
+
+
+# ---------------------------------------------------------------------------
+# resolve_unique_symbol_via_workspace
+# ---------------------------------------------------------------------------
+
+
+def resolve_unique_symbol_via_workspace(
+    ls: SolidLanguageServer,
+    name_path: str,
+    relative_path: str | None = None,
+) -> UnifiedSymbolInformation:
+    """Resolve *name_path* to a unique symbol using ``workspace/symbol``.
+
+    Avoids the expensive ``request_full_symbol_tree`` scan used by
+    :func:`resolve_unique_symbol`.  Works by:
+
+    1. Querying the LSP's ``workspace/symbol`` with the last component of
+       *name_path* to get candidate symbols (fast — LSP-side index).
+    2. For each candidate, calling ``request_symbol_at_location`` to get the
+       full symbol with parent chain.
+    3. Computing the ``name_path`` via :func:`compute_name_path` and matching
+       with :class:`NamePathMatcher`.
+    4. Resolving to a unique symbol (same disambiguation logic as
+       :func:`resolve_unique_symbol`).
+
+    If ``workspace/symbol`` is not supported by the language server (returns
+    ``None`` or raises), falls back to :func:`resolve_unique_symbol`.
+
+    :param ls: a started ``SolidLanguageServer`` instance.
+    :param name_path: the name_path pattern to search for.
+    :param relative_path: optional file or directory to scope the search.
+    :raises SymbolResolutionError: on ambiguity or no match.
+    """
+    # Parse the last component from the name_path pattern
+    pattern = name_path.lstrip("/")
+    parts = [p for p in pattern.split("/") if p]
+    last_component = parts[-1] if parts else ""
+
+    if not last_component:
+        raise SymbolResolutionError(name_path, "Empty name_path pattern")
+
+    # Try workspace/symbol first
+    try:
+        candidates_raw = ls.request_workspace_symbol(last_component)
+    except Exception:
+        # workspace/symbol not supported — fall back to full tree
+        return resolve_unique_symbol(ls, name_path, relative_path)
+
+    if candidates_raw is None:
+        # workspace/symbol not supported (returned None)
+        return resolve_unique_symbol(ls, name_path, relative_path)
+
+    if not candidates_raw:
+        raise SymbolResolutionError(
+            name_path,
+            f"No symbols found matching '{last_component}' via workspace/symbol",
+        )
+
+    from solidlsp.ls_utils import PathUtils
+    from pathlib import Path
+
+    matcher = NamePathMatcher(name_path)
+    candidates: dict[str, list[UnifiedSymbolInformation]] = {}
+
+    for raw_sym in candidates_raw:
+        location = raw_sym.get("location")
+        if not location:
+            continue
+
+        uri = location.get("uri", "")
+        if not uri:
+            continue
+
+        # Convert URI → absolute path → project-relative path
+        try:
+            abs_path = PathUtils.uri_to_path(uri)
+            rel_path = str(Path(abs_path).resolve().relative_to(ls.repository_root_path))
+        except (ValueError, Exception):
+            continue
+
+        # Filter by relative_path if provided (handle both file and directory scopes)
+        if relative_path is not None:
+            norm_rel = relative_path.rstrip("/")
+            if rel_path != norm_rel and not rel_path.startswith(norm_rel + "/"):
+                continue
+
+        # Get position from the LSP location
+        range_info = location.get("range", {})
+        if not isinstance(range_info, dict):
+            continue
+        start = range_info.get("start", {})
+        if not isinstance(start, dict):
+            continue
+        line = start.get("line", 0)
+        col = start.get("character", 0)
+
+        # Get full symbol info with parent chain from this single file
+        full_sym = ls.request_symbol_at_location(rel_path, line, col)
+        if full_sym is None:
+            continue
+
+        computed = compute_name_path(full_sym)
+        if matcher.matches(computed):
+            candidates.setdefault(computed, []).append(full_sym)
+
+    # Resolve uniqueness — same logic as resolve_unique_symbol
+    all_candidates: list[UnifiedSymbolInformation] = []
+    for lst in candidates.values():
+        all_candidates.extend(lst)
+
+    if len(all_candidates) == 1:
+        return all_candidates[0]
+
+    if len(all_candidates) > 1:
+        # Try exact match to break the tie
+        normalized_pattern = name_path[1:] if name_path.startswith("/") else name_path
+        exact_matches = [s for s in all_candidates if compute_name_path(s) == normalized_pattern]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+
+        # Build a human-readable candidate list
+        candidate_list: list[dict[str, object]] = []
+        for s in all_candidates:
+            loc = s.get("location") or {}
+            candidate_list.append({
+                "name_path": compute_name_path(s),
+                "kind": s.get("kind"),
+                "location": (
+                    f"{loc.get('relativePath', '')}:"
+                    f"{loc.get('range', {}).get('start', {}).get('line', 0)}-"
+                    f"{loc.get('range', {}).get('end', {}).get('line', 0)}"
+                ),
+            })
+
+        raise SymbolResolutionError(
+            name_path,
+            f"Ambiguous name_path — {len(all_candidates)} matches. Refine via find_symbol first.",
+            candidates=candidate_list,
+        )
+
+    raise SymbolResolutionError(
+        name_path,
+        "No symbol matches this name_path in the project.",
+    )

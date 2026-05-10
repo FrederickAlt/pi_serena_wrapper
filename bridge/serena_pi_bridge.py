@@ -42,6 +42,7 @@ from name_path import (
     compute_name_path,
     NamePathMatcher,
     resolve_unique_symbol,
+    resolve_unique_symbol_via_workspace,
     SymbolResolutionError,
 )
 
@@ -292,7 +293,7 @@ class Bridge:
         name_path = str(params["name_path"])
         relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
-        symbol = resolve_unique_symbol(self.ls, name_path, relative_path)  # type: ignore[arg-type]
+        symbol = resolve_unique_symbol_via_workspace(self.ls, name_path, relative_path)
 
         # Get the position from selectionRange (fall back to range)
         selection_range = symbol.get("selectionRange") or symbol.get("range")
@@ -342,7 +343,7 @@ class Bridge:
         relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
         assert self.ls is not None
-        symbol = resolve_unique_symbol(self.ls, name_path, relative_path)  # type: ignore[arg-type]
+        symbol = resolve_unique_symbol_via_workspace(self.ls, name_path, relative_path)
         location = symbol.get("location")
         if not location:
             raise SymbolResolutionError(name_path, f"Symbol {name_path!r} has no source location.")
@@ -395,7 +396,7 @@ class Bridge:
         relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
         assert self.ls is not None
-        symbol = resolve_unique_symbol(self.ls, name_path, relative_path)  # type: ignore[arg-type]
+        symbol = resolve_unique_symbol_via_workspace(self.ls, name_path, relative_path)
 
         location = symbol.get("location") or {}
         relative_file_path = location.get("relativePath", "")
@@ -446,7 +447,7 @@ class Bridge:
         relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
         assert self.ls is not None
-        symbol = resolve_unique_symbol(self.ls, name_path, relative_path)  # type: ignore[arg-type]
+        symbol = resolve_unique_symbol_via_workspace(self.ls, name_path, relative_path)
 
         # Extract position from selectionRange (fall back to range).
         sel_range = symbol.get("selectionRange") or symbol.get("range")
@@ -509,7 +510,7 @@ class Bridge:
 
         assert self.ls is not None
         try:
-            symbol = resolve_unique_symbol(self.ls, name_path, relative_path)  # type: ignore[arg-type]
+            symbol = resolve_unique_symbol_via_workspace(self.ls, name_path, relative_path)
         except SymbolResolutionError as exc:
             candidates_json = json.dumps(exc.candidates, ensure_ascii=False, default=str)
             return f"Error: {exc} Candidates: {candidates_json}"
