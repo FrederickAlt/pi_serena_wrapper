@@ -5,6 +5,7 @@ Issue #1 — init/shutdown lifecycle.
 Issue #3 — find_symbol tool.
 Issue #4 — get_document_symbols tool.
 Issue #5 — get_type tool.
+Issue #6 — get_references tool.
 """
 
 from __future__ import annotations
@@ -114,6 +115,18 @@ class Bridge:
         if tool_contract is None:
             raise ValueError(f"Unknown tool: {tool_name}")
 
+        self._validate_params(tool_name, params, tool_contract)
+
+        if tool_name == "find_symbol":
+            return self._find_symbol(params)
+        elif tool_name == "get_document_symbols":
+            return self._get_document_symbols(params)
+        elif tool_name == "get_type":
+            return self._get_type(params)
+        elif tool_name == "get_references":
+            return self._get_references(params)
+        else:
+            raise ValueError(f"Tool not implemented: {tool_name}")
         self._validate_params(tool_name, params, tool_contract)
 
         if tool_name == "find_symbol":
@@ -309,6 +322,58 @@ class Bridge:
             ),
         }
         return result
+    # -- get_references tool -----------------------------------------------
+
+    def _get_references(self, params: dict[str, object]) -> list[dict[str, object]]:
+        """Find all references to the symbol identified by *name_path*."""
+        name_path = str(params["name_path"])
+        relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
+
+        assert self.ls is not None
+        symbol = resolve_unique_symbol(self.ls, name_path, relative_path)  # type: ignore[arg-type]
+        location = symbol.get("location")
+        if not location:
+            raise SymbolResolutionError(name_path, f"Symbol {name_path!r} has no source location.")
+
+        ref_relative_path = location["relativePath"]
+        if ref_relative_path is None:
+            raise SymbolResolutionError(name_path, f"Symbol {name_path!r} has no relative path.")
+
+        line = location["range"]["start"]["line"]
+        column = location["range"]["start"]["character"]
+
+        references = self.ls.request_references(ref_relative_path, line, column)
+
+        results: list[dict[str, object]] = []
+        for ref in references:
+            ref_rel = ref.get("relativePath")
+            if ref_rel is None:
+                continue
+            ref_line = ref["range"]["start"]["line"]
+            ref_col = ref["range"]["start"]["character"]
+            ref_end_line = ref["range"]["end"]["line"]
+
+            # Try to get the symbol at the reference location for richer info
+            sym = self.ls._request_symbol_at_location(ref_rel, ref_line, ref_col)
+            if sym is not None:
+                try:
+                    np = compute_name_path(sym)
+                except Exception:
+                    np = sym.get("name", Path(ref_rel).stem)
+                kind_str = SymbolKind(sym["kind"]).name
+            else:
+                np = Path(ref_rel).stem
+                kind_str = "Reference"
+
+            location_str = f"{ref_rel}:{ref_line + 1}-{ref_end_line + 1}"
+
+            results.append({
+                "name_path": np,
+                "kind": kind_str,
+                "location": location_str,
+            })
+
+        return results
 
     # -- helpers ------------------------------------------------------------
 

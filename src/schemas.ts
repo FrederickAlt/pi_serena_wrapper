@@ -81,9 +81,9 @@ export const toolSchemas = {
     max_matches: Type.Optional(Type.Number({ description: "Maximum number of symbol matches to return. Default 10. -1 means unlimited." })),
   }),
 
-  find_referencing_symbols: Type.Object({
-    ...NamePathLookup,
-    kinds: KindList,
+  get_references: Type.Object({
+    name_path: NamePath,
+    relative_path: Type.Optional(RelativePath),
   }),
 
   find_implementations: Type.Object({

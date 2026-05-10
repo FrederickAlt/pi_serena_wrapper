@@ -70,26 +70,21 @@
         "additionalProperties": false
       }
     },
-    "find_referencing_symbols": {
-      "description": "Find symbols that reference a given Serena symbol.",
+    "get_references": {
+      "description": "Find all references to a Serena symbol.",
       "params": {
         "type": "object",
         "properties": {
-          "relative_path": {
-            "type": "string",
-            "description": "Path to a source file or directory, relative to the current project root."
-          },
           "name_path": {
             "type": "string",
             "description": "Serena symbol name path for a named code entity in the symbol tree, for example MyClass/my_method or /MyClass/my_method."
           },
-          "kinds": {
-            "type": "array",
-            "items": { "type": "number" },
-            "description": "LSP SymbolKind integer values."
+          "relative_path": {
+            "type": "string",
+            "description": "Path to a source file or directory, relative to the current project root."
           }
         },
-        "required": ["relative_path", "name_path"],
+        "required": ["name_path"],
         "additionalProperties": false
       }
     },
