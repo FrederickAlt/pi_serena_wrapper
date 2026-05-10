@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { SubprocessTransport, type JsonRpcTransport, DEFAULT_TIMEOUT_MS } from "./transport.js";
+import type { SerenaToolName } from "./schemas.js";
 
 export { JsonValue } from "./transport.js";
 
@@ -89,6 +90,13 @@ export class SerenaBridgeClient {
     const result = await this.transport.send("init", { cwd }, signal);
     this.initializedFor = cwd;
     return result;
+  }
+
+  async callTool(toolName: SerenaToolName, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    if (!this.transport.isAlive()) {
+      throw new Error("Serena bridge is not running. Call init() first.");
+    }
+    return await this.transport.send("call_tool", { tool_name: toolName, ...params }, signal);
   }
 
   async shutdown(): Promise<void> {

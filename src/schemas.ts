@@ -67,11 +67,13 @@ export const toolSchemas = {
   }),
 
   find_symbol: Type.Object({
-    name_path: Type.String({ description: "Serena symbol name path to search for. Exact match only." }),
-    depth: Type.Optional(Type.Number({ description: "Descendant depth to include. Default 0." })),
+    name_path: Type.String({ description: "Serena symbol name path pattern. Matched component-by-component, right-to-left, each component exact. Use leading / for absolute (exact full) match." }),
     relative_path: Type.Optional(RelativePath),
+    code_snippet: Type.Optional(Type.String({
+      description: "Exact source code snippet to scope the search via rg. Only symbols whose location falls within a snippet occurrence are returned.",
+    })),
     kinds: KindList,
-    max_matches: Type.Optional(Type.Number({ description: "Maximum number of symbol matches to return. -1 means unlimited." })),
+    max_matches: Type.Optional(Type.Number({ description: "Maximum number of symbol matches to return. Default 10. -1 means unlimited." })),
   }),
 
   get_symbol_from_snippet: Type.Object({
