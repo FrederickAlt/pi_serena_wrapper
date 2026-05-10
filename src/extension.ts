@@ -184,6 +184,10 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.on("session_start", async (_event, ctx) => {
+    await clientFor().init(ctx.cwd);
+  });
+
   pi.on("session_shutdown", async (_event, _ctx) => {
     if (client) {
       await client.shutdown();
