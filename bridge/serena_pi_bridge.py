@@ -3,6 +3,7 @@
 
 Issue #1 — init/shutdown lifecycle.
 Issue #3 — find_symbol tool.
+Issue #4 — get_document_symbols tool.
 """
 
 from __future__ import annotations
@@ -111,6 +112,8 @@ class Bridge:
 
         if tool_name == "find_symbol":
             return self._find_symbol(params)
+        elif tool_name == "get_document_symbols":
+            return self._get_document_symbols(params)
         else:
             raise ValueError(f"Tool not implemented: {tool_name}")
 
@@ -214,6 +217,40 @@ class Bridge:
             "symbols": result_symbols,
             "truncated": truncated,
         }
+
+    # -- get_document_symbols tool -----------------------------------------
+
+    def _get_document_symbols(self, params: dict[str, object]) -> str:
+        """Return an indented plain-text tree of document symbols.
+
+        Each line is ``Kind Name`` with 2 spaces per nesting level.
+        *depth* controls how many levels of children to include (0 = top-level only).
+        """
+        relative_path = str(params["relative_path"])
+        depth = int(params.get("depth", 0))
+        assert self.ls is not None
+        doc_symbols = self.ls.request_document_symbols(relative_path)
+        return self._format_symbols(doc_symbols.root_symbols, depth, 0)
+
+    @staticmethod
+    def _format_symbols(
+        symbols: list,
+        max_depth: int,
+        current_depth: int,
+    ) -> str:
+        """Recursively format a list of UnifiedSymbolInformation as indented text."""
+        lines: list[str] = []
+        indent = "  " * current_depth
+        for sym in symbols:
+            kind_name = SymbolKind(sym["kind"]).name
+            lines.append(f"{indent}{kind_name} {sym['name']}")
+            if current_depth < max_depth:
+                children = sym.get("children", [])
+                if children:
+                    lines.append(
+                        Bridge._format_symbols(children, max_depth, current_depth + 1)
+                    )
+        return "\n".join(lines)
 
     # -- helpers ------------------------------------------------------------
 

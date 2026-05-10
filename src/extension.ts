@@ -30,6 +30,28 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // -- get_document_symbols -----------------------------------------------
+
+  pi.registerTool({
+    name: "get_document_symbols",
+    label: "Get Document Symbols",
+    description: toolDescriptions.get_document_symbols,
+    parameters: toolSchemas.get_document_symbols,
+    promptGuidelines: [
+      "Prefer get_document_symbols over read/grep for understanding the structure of a source file.",
+      "Use depth=1 to see top-level symbols and their immediate children (e.g. class members).",
+    ],
+    execute: async (toolCallId, params, signal) => {
+      const bridge = clientFor();
+      const text = await bridge.callTool("get_document_symbols", params as Record<string, unknown>, signal) as string;
+      return {
+        content: [
+          { type: "text" as const, text },
+        ],
+      };
+    },
+  });
+
   // -- lifecycle ----------------------------------------------------------
 
   pi.on("session_shutdown", async (_event, _ctx) => {
