@@ -58,7 +58,7 @@ async function runSetupCommand(command: string, args: string[], cwd: string): Pr
 }
 
 // ---------------------------------------------------------------------------
-// SerenaBridgeClient — protocol layer only (init + shutdown for now)
+// SerenaBridgeClient — protocol layer (init, shutdown, and tool dispatch)
 // ---------------------------------------------------------------------------
 
 export class SerenaBridgeClient {
