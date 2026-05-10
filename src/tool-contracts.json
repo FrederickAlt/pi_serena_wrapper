@@ -127,6 +127,24 @@
         "required": ["relative_path", "name_path", "new_name"],
         "additionalProperties": false
       }
+    },
+    "get_docstring": {
+      "description": "Get the hover text (documentation) for a symbol resolved via its name path.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "name_path": {
+            "type": "string",
+            "description": "Serena symbol name path for a named code entity in the symbol tree, for example MyClass/my_method or /MyClass/my_method."
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "Path to a source file or directory, relative to the current project root."
+          }
+        },
+        "required": ["name_path"],
+        "additionalProperties": false
+      }
     }
   }
 }

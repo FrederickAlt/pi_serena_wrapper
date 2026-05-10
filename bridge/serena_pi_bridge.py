@@ -7,6 +7,7 @@ Issue #4 — get_document_symbols tool.
 Issue #5 — get_type tool.
 Issue #6 — get_references tool.
 Issue #7 — get_implementations tool.
+Issue #8 — get_docstring tool.
 """
 
 from __future__ import annotations
@@ -129,6 +130,8 @@ class Bridge:
             return self._get_references(params)
         elif tool_name == "get_implementations":
             return self._get_implementations(params)
+        elif tool_name == "get_docstring":
+            return self._get_docstring(params)
         else:
             raise ValueError(f"Tool not implemented: {tool_name}")
         self._validate_params(tool_name, params, tool_contract)
@@ -429,6 +432,67 @@ class Bridge:
             })
 
         return {"symbols": result_list}
+
+    # -- get_docstring tool --------------------------------------------------
+
+    def _get_docstring(self, params: dict[str, object]) -> str:
+        """Return hover text for the symbol identified by *name_path*."""
+        name_path = str(params["name_path"])
+        relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
+
+        assert self.ls is not None
+        symbol = resolve_unique_symbol(self.ls, name_path, relative_path)  # type: ignore[arg-type]
+
+        # Extract position from selectionRange (fall back to range).
+        sel_range = symbol.get("selectionRange") or symbol.get("range")
+        if sel_range is None:
+            return "No docstring available."
+        line = sel_range["start"]["line"]
+        column = sel_range["start"]["character"]
+
+        # Get the file path.
+        location = symbol.get("location")
+        if location is None:
+            return "No docstring available."
+        file_path = location["relativePath"]
+
+        hover = self.ls.request_hover(file_path, line, column)
+        text = self._extract_hover_text(hover)
+        return text if text else "No docstring available."
+
+    @staticmethod
+    def _extract_hover_text(hover: object) -> str:
+        """Extract plain text from an LSP Hover result."""
+        if hover is None:
+            return ""
+        if not isinstance(hover, dict):
+            return ""
+
+        contents = hover.get("contents")
+        if contents is None:
+            return ""
+
+        # MarkupContent (has 'kind' and 'value') or MarkedString (has 'language' and 'value').
+        if isinstance(contents, dict):
+            if "value" in contents:
+                return str(contents["value"])
+            return ""
+
+        # Plain string.
+        if isinstance(contents, str):
+            return contents
+
+        # List of MarkedString.
+        if isinstance(contents, list):
+            parts: list[str] = []
+            for item in contents:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and "value" in item:
+                    parts.append(str(item["value"]))
+            return "\n".join(parts)
+
+        return ""
 
     # -- helpers ------------------------------------------------------------
 

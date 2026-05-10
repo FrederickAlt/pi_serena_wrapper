@@ -139,6 +139,27 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // -- get_docstring -------------------------------------------------------
+
+  pi.registerTool({
+    name: "get_docstring" as SerenaToolName,
+    label: "Get Docstring",
+    description: toolDescriptions.get_docstring,
+    parameters: toolSchemas.get_docstring,
+    promptGuidelines: [
+      "Use get_docstring to retrieve documentation/hover text for a symbol.",
+      "Provide the name_path to identify the symbol. Optionally scope with relative_path.",
+      "Returns a plain string with the hover content, or 'No docstring available.'.",
+    ],
+    async execute(_toolCallId, params, signal) {
+      const bridge = clientFor();
+      const text = await bridge.callTool("get_docstring", params as Record<string, unknown>, signal) as string;
+      return {
+        content: [{ type: "text" as const, text }],
+      };
+    },
+  });
+
   pi.on("session_shutdown", async (_event, _ctx) => {
     if (client) {
       await client.shutdown();
