@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Regression test for the Serena bridge init/shutdown lifecycle (Issue #1). */
+/** Regression test for Serena bridge init/shutdown lifecycle and get_docstring tool. */
 
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
@@ -30,7 +30,47 @@ async function writeTypeScriptFixture(): Promise<void> {
 `);
 }
 
-async function writePythonFixture(): Promise<void> {
+/**
+ * TypeScript fixture with a JSDoc-documented function and an undocumented one.
+ * Also includes two classes with the same method name for ambiguity testing.
+ */
+async function writeDocstringFixture(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(path.join(fixtureRoot, "src"), { recursive: true });
+  await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ type: "module" }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "tsconfig.json"), JSON.stringify({
+    compilerOptions: { target: "ES2020", module: "ESNext", moduleResolution: "Node", strict: true },
+    include: ["src/**/*.ts"],
+  }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "src", "index.ts"), `/**
+ * Sends a JSON-RPC request over stdin/stdout and returns the response.
+ */
+export function doRequest(method: string, params: unknown[]): string {
+  return JSON.stringify({ method, params });
+}
+
+/** No JSDoc on this one. */
+export function undocumented(): string {
+  return "undocumented";
+}
+
+export class Alpha {
+  /** Alpha's helper. */
+  work(): void {}
+}
+
+export class Beta {
+  /** Beta's helper. */
+  work(): void {}
+}
+`);
+}
+
+function writePythonFixture(): Promise<void> {
+  return writePythonFixtureImpl();
+}
+
+async function writePythonFixtureImpl(): Promise<void> {
   await rm(fixtureRoot, { recursive: true, force: true });
   await mkdir(fixtureRoot, { recursive: true });
   await writeFile(path.join(fixtureRoot, "test.py"), `def greet(name: str) -> str:
@@ -83,6 +123,55 @@ async function run(): Promise<void> {
   await client.shutdown();
 
   console.log(`PASS jsonl regression (init/shutdown): ${fixtureRoot}`);
+
+  // --- get_docstring tests ---
+  await writeDocstringFixture();
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - typescript\n",
+  );
+  await client.init(fixtureRoot);
+
+  // 1. Documented symbol: doRequest should have JSDoc hover text.
+  const docText = String(await client.callTool("get_docstring", { name_path: "doRequest" }));
+  assert(docText.length > 0, `get_docstring should return non-empty text`);
+  assert(
+    docText !== "No docstring available.",
+    `doRequest should have a docstring: ${docText}`,
+  );
+  // The JSDoc text should appear somewhere in the hover.
+  assert(
+    docText.toLowerCase().includes("sends") || docText.toLowerCase().includes("json-rpc"),
+    `doRequest docstring should contain JSDoc text, got: ${docText}`,
+  );
+  console.log(`get_docstring (documented): ${docText.slice(0, 80)}...`);
+
+  // 2. Undocumented symbol: TypeScript LS returns signature even without JSDoc.
+  // We just verify it returns some text, not the sentinel.
+  const undocText = String(await client.callTool("get_docstring", { name_path: "undocumented" }));
+  assert(undocText.length > 0, `get_docstring for undocumented should return non-empty text, got: ${JSON.stringify(undocText)}`);
+  assert(
+    undocText !== "No docstring available.",
+    `undocumented should still have hover info from LS, got: ${JSON.stringify(undocText)}`,
+  );
+  console.log(`get_docstring (undocumented): ${undocText.slice(0, 80)}...`);
+
+  // 3. Ambiguous name_path: "work" matches Alpha/work and Beta/work.
+  try {
+    await client.callTool("get_docstring", { name_path: "work" });
+    throw new Error("Expected ambiguity error but call succeeded");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const msgLower = msg.toLowerCase();
+    if (!msgLower.includes("ambigu") && !msgLower.includes("found") && !msgLower.includes("match")) {
+      throw new Error(`Expected ambiguity-related error, got: ${msg}`);
+    }
+    console.log(`get_docstring (ambiguity): ${msg}`);
+  }
+
+  await client.shutdown();
+
+  console.log(`PASS jsonl regression (get_docstring): ${fixtureRoot}`);
 }
 
 run().catch(async (error) => {

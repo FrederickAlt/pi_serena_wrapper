@@ -111,6 +111,11 @@ export const toolSchemas = {
     ...NamePathLookup,
     new_name: Type.String({ description: "New symbol name. The language server may reject rename if the workspace has errors." }),
   }),
+
+  get_docstring: Type.Object({
+    name_path: NamePath,
+    relative_path: Type.Optional(RelativePath),
+  }),
 } as const;
 
 // ---------------------------------------------------------------------------

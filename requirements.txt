@@ -2,3 +2,10 @@ sensai-utils
 pathspec
 jsonschema
 pyyaml
+psutil
+pyright
+overrides
+pygls
+lsprotocol
+charset_normalizer
+requests

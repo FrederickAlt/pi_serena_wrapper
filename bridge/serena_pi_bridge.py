@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal JSONL bridge that starts SolidLSP for a given project.
-
-This is the bootstrap bridge for Issue #1 — it handles init/shutdown lifecycle
-only.  Tool dispatch will be added in follow-up issues.
-"""
+"""JSONL bridge that starts SolidLSP for a given project and dispatches tools."""
 
 from __future__ import annotations
 
@@ -23,6 +19,8 @@ import yaml
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.settings import SolidLSPSettings
+
+from name_path import resolve_unique_symbol, SymbolResolutionError
 
 PACKAGE_ROOT = _BRIDGE_DIR.parent
 SERENA_HOME = PACKAGE_ROOT / ".serena-data"
@@ -85,6 +83,68 @@ class Bridge:
             self.ls = None
         self.cwd = None
         return "OK"
+
+    # -- tool: get_docstring ------------------------------------------------
+
+    def get_docstring(
+        self, name_path: str, relative_path: str | None = None
+    ) -> str:
+        """Return hover text for the symbol identified by *name_path*."""
+        assert self.ls is not None, "LS not initialised"
+
+        symbol = resolve_unique_symbol(self.ls, name_path, relative_path)
+
+        # Extract position from selectionRange (fall back to range).
+        sel_range = symbol.get("selectionRange") or symbol.get("range")
+        if sel_range is None:
+            return "No docstring available."
+        line = sel_range["start"]["line"]
+        column = sel_range["start"]["character"]
+
+        # Get the file path.
+        location = symbol.get("location")
+        if location is None:
+            return "No docstring available."
+        file_path = location["relativePath"]
+
+        hover = self.ls.request_hover(file_path, line, column)
+        text = self._extract_hover_text(hover)
+        return text if text else "No docstring available."
+
+    @staticmethod
+    def _extract_hover_text(hover: object) -> str:
+        """Extract plain text from an LSP Hover result."""
+        if hover is None:
+            return ""
+        if not isinstance(hover, dict):
+            return ""
+
+        contents = hover.get("contents")
+        if contents is None:
+            return ""
+
+        # MarkupContent (has 'kind' and 'value') or __MarkedString_Type_1
+        # (has 'language' and 'value').
+        if isinstance(contents, dict):
+            if "value" in contents:
+                return str(contents["value"])
+            return ""
+
+        # Plain string.
+        if isinstance(contents, str):
+            return contents
+
+        # List of MarkedString.
+        if isinstance(contents, list):
+            parts: list[str] = []
+            for item in contents:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and "value" in item:
+                    parts.append(str(item["value"]))
+            return "\n".join(parts)
+
+        return ""
 
     # -- helpers ------------------------------------------------------------
 
@@ -161,10 +221,30 @@ def main() -> int:
                 result = bridge.shutdown()
                 respond(request_id, True, result)
                 return 0
+            elif method == "get_docstring":
+                result = bridge.get_docstring(
+                    name_path=str(request["name_path"]),
+                    relative_path=request.get("relative_path"),
+                )
             else:
                 raise ValueError(f"Unknown method: {method}")
 
             respond(request_id, True, result)
+        except SymbolResolutionError as exc:
+            # Return structured error with candidates list.
+            try:
+                payload: dict[str, object] = {
+                    "id": request_id,
+                    "ok": False,
+                    "error": {
+                        "kind": "ambiguity",
+                        "message": str(exc),
+                        "candidates": exc.candidates,
+                    },
+                }
+                print(json.dumps(payload, ensure_ascii=False), flush=True)
+            except Exception:
+                pass
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             try:

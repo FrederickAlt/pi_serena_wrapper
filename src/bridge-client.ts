@@ -101,6 +101,15 @@ export class SerenaBridgeClient {
     await this.transport.shutdown();
   }
 
+  /** Call a named tool on the Python bridge and return its response. */
+  async callTool(
+    toolName: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    return this.transport.send(toolName, params, signal);
+  }
+
   // -- private --------------------------------------------------------------
 
   private async ensurePython(): Promise<void> {
