@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { SerenaBridgeClient } from "./bridge-client.js";
+import { toolSchemas, toolDescriptions } from "./schemas.js";
 
 export default function (pi: ExtensionAPI) {
   let client: SerenaBridgeClient | undefined;
@@ -11,8 +12,25 @@ export default function (pi: ExtensionAPI) {
     return client;
   }
 
-  // No tools registered yet — only init/shutdown lifecycle.
-  // Tools will be added in follow-up issues (see GitHub issues #2–#10).
+  pi.registerTool({
+    name: "get_document_symbols",
+    label: "Get Document Symbols",
+    description: toolDescriptions.get_document_symbols,
+    parameters: toolSchemas.get_document_symbols,
+    promptGuidelines: [
+      "Prefer get_document_symbols over read/grep for understanding the structure of a source file.",
+      "Use depth=1 to see top-level symbols and their immediate children (e.g. class members).",
+    ],
+    execute: async (toolCallId, params, signal) => {
+      const bridge = clientFor();
+      const text = await bridge.callTool("get_document_symbols", params as Record<string, unknown>, signal) as string;
+      return {
+        content: [
+          { type: "text" as const, text },
+        ],
+      };
+    },
+  });
 
   pi.on("session_shutdown", async (_event, _ctx) => {
     if (client) {

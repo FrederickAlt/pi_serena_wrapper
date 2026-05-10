@@ -61,7 +61,7 @@ const NamePathLookup = {
 // ---------------------------------------------------------------------------
 
 export const toolSchemas = {
-  get_symbols_overview: Type.Object({
+  get_document_symbols: Type.Object({
     relative_path: RelativePath,
     depth: Type.Optional(Type.Number({ description: "Descendant depth to include. Default 0." })),
   }),

@@ -3,8 +3,8 @@
   "title": "pi-serena-lsp Tool Contracts",
   "description": "Shared JSON contract defining parameters for all 7 Serena LSP tools exposed to the Pi coding agent. This file is the single source of truth for parameter types, required fields, and descriptions across the TypeScript and Python sides.",
   "tools": {
-    "get_symbols_overview": {
-      "description": "Get a Serena top-level symbol overview for a source file.",
+    "get_document_symbols": {
+      "description": "Get a plain-text tree of document symbols. Each line is `Kind Name` with 2 spaces per nesting level.",
       "params": {
         "type": "object",
         "properties": {

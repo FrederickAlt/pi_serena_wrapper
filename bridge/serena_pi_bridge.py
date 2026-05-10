@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Minimal JSONL bridge that starts SolidLSP for a given project.
+"""JSONL bridge that starts SolidLSP and dispatches LSP tool calls.
 
-This is the bootstrap bridge for Issue #1 — it handles init/shutdown lifecycle
-only.  Tool dispatch will be added in follow-up issues.
+Supports init/shutdown lifecycle and ``call_tool`` dispatch for
+get_document_symbols (Issue #4).  Additional tools will be added in follow-up issues.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import yaml
 
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import Language, LanguageServerConfig
+from solidlsp.lsp_protocol_handler.lsp_types import SymbolKind
 from solidlsp.settings import SolidLSPSettings
 
 PACKAGE_ROOT = _BRIDGE_DIR.parent
@@ -85,6 +86,37 @@ class Bridge:
             self.ls = None
         self.cwd = None
         return "OK"
+
+    def get_document_symbols(self, relative_path: str, depth: int = 0) -> str:
+        """Return an indented plain-text tree of document symbols.
+
+        Each line is ``Kind Name`` with 2 spaces per nesting level.
+        *depth* controls how many levels of children to include (0 = top-level only).
+        """
+        if self.ls is None:
+            raise RuntimeError("Bridge not initialized. Call init first.")
+        doc_symbols = self.ls.request_document_symbols(relative_path)
+        return self._format_symbols(doc_symbols.root_symbols, depth, 0)
+
+    @staticmethod
+    def _format_symbols(
+        symbols: list,
+        max_depth: int,
+        current_depth: int,
+    ) -> str:
+        """Recursively format a list of UnifiedSymbolInformation as indented text."""
+        lines: list[str] = []
+        indent = "  " * current_depth
+        for sym in symbols:
+            kind_name = SymbolKind(sym["kind"]).name
+            lines.append(f"{indent}{kind_name} {sym['name']}")
+            if current_depth < max_depth:
+                children = sym.get("children", [])
+                if children:
+                    lines.append(
+                        Bridge._format_symbols(children, max_depth, current_depth + 1)
+                    )
+        return "\n".join(lines)
 
     # -- helpers ------------------------------------------------------------
 
@@ -161,6 +193,14 @@ def main() -> int:
                 result = bridge.shutdown()
                 respond(request_id, True, result)
                 return 0
+            elif method == "call_tool":
+                tool_name = str(request["tool_name"])
+                if tool_name == "get_document_symbols":
+                    rel_path = str(request["relative_path"])
+                    depth = int(request.get("depth", 0))
+                    result = bridge.get_document_symbols(rel_path, depth)
+                else:
+                    raise ValueError(f"Unknown tool: {tool_name}")
             else:
                 raise ValueError(f"Unknown method: {method}")
 
