@@ -31,7 +31,9 @@ pi-serena-lsp/
 └── requirements.txt            # Python deps (serena-agent + jsonschema)
 ```
 
----
+## Serena Repo
+
+This is located at `../serena/`. You should only read this and not edit! The docs are in `../serena/docs` and the source is at `../serena/src`.
 
 ## Architecture
 
@@ -78,6 +80,7 @@ pi harness (Node/TS)  ──JSONL over stdin/stdout──►  serena_pi_bridge.p
 To configure per-project Serena settings (most importantly, the list of active language servers), place a `.serenaproject.yml` file in the **root of your project** (the `cwd` passed to the bridge).
 
 On every `init`, the bridge reads this file and:
+
 1. **Writes it to `project.local.yml`** inside the project's `.serena-projects/<hash>/` directory.
 2. On first init for a project, the bridge also creates a minimal `project.yml` stub so that Serena's config loader merges the local overrides natively instead of auto-generating and discarding them.
 3. All settings (including `languages`, `encoding`, `ignored_paths`, etc.) are applied **immediately** — Serena reads the merged config during agent initialisation. No two-phase patching, no "takes effect next session".
@@ -143,17 +146,17 @@ The regression test (`scripts/jsonl-regression.ts`) creates temporary TypeScript
 
 ### Operational boundaries
 
-4. **Bridge does not auto-register language servers.** The ADR at `docs/adr/0001-remove-bridge-language-detection.md` explains why. If an LSP call fails because a language isn't configured, the user/agent must configure it via `.serenaproject.yml` in the project root (see [Project configuration](#project-configuration-serenaprojectyml)).
+1. **Bridge does not auto-register language servers.** The ADR at `docs/adr/0001-remove-bridge-language-detection.md` explains why. If an LSP call fails because a language isn't configured, the user/agent must configure it via `.serenaproject.yml` in the project root (see [Project configuration](#project-configuration-serenaprojectyml)).
 
-5. **Per-cwd clients.** The extension keeps one `SerenaBridgeClient` per working directory. Switching projects kills the old Python process and spawns a new one. This means Serena state (index, language servers) is scoped to one project at a time.
+2. **Per-cwd clients.** The extension keeps one `SerenaBridgeClient` per working directory. Switching projects kills the old Python process and spawns a new one. This means Serena state (index, language servers) is scoped to one project at a time.
 
-6. **Pass-through results.** Tool outputs are JSON from Serena/SolidLSP internals. They are not a stable structured API for non-agent consumers. The agent must parse and handle the raw shape.
+3. **Pass-through results.** Tool outputs are JSON from Serena/SolidLSP internals. They are not a stable structured API for non-agent consumers. The agent must parse and handle the raw shape.
 
 ### Error handling & isolation
 
-7. **Failed tool call logging.** All 7 tools log failures to `.serena-data/failed-tool-calls.jsonl`. The log records timestamp, cwd, tool name, args, failure kind, and error message. `find_implementations` on an unsupported language server is logged as an error_result, not an exception.
+1. **Failed tool call logging.** All 7 tools log failures to `.serena-data/failed-tool-calls.jsonl`. The log records timestamp, cwd, tool name, args, failure kind, and error message. `find_implementations` on an unsupported language server is logged as an error_result, not an exception.
 
-8. **Python environment is package-local.** The bridge uses `.venv/bin/python` — never the system Python or a globally installed Serena. This avoids dependency conflicts with the user's project.
+2. **Python environment is package-local.** The bridge uses `.venv/bin/python` — never the system Python or a globally installed Serena. This avoids dependency conflicts with the user's project.
 
 ---
 
