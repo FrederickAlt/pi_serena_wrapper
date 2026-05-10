@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Minimal JSONL bridge that starts SolidLSP for a given project.
+"""JSONL bridge that starts SolidLSP and dispatches Serena tools.
 
-This is the bootstrap bridge for Issue #1 — it handles init/shutdown lifecycle
-only.  Tool dispatch will be added in follow-up issues.
+Handles init/shutdown lifecycle and tool dispatch for registered Serena tools.
 """
 
 from __future__ import annotations
@@ -22,7 +21,10 @@ import yaml
 
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import Language, LanguageServerConfig
+from solidlsp.lsp_protocol_handler.lsp_types import SymbolKind
 from solidlsp.settings import SolidLSPSettings
+
+from name_path import resolve_unique_symbol, SymbolResolutionError, compute_name_path
 
 PACKAGE_ROOT = _BRIDGE_DIR.parent
 SERENA_HOME = PACKAGE_ROOT / ".serena-data"
@@ -85,6 +87,64 @@ class Bridge:
             self.ls = None
         self.cwd = None
         return "OK"
+
+    # -- tools --------------------------------------------------------------
+
+    def get_references(
+        self, name_path: str, relative_path: str | None = None
+    ) -> list[dict[str, object]]:
+        """Find all references to the symbol identified by *name_path*."""
+        if self.ls is None:
+            raise RuntimeError("Language server not initialised.")
+
+        symbol = resolve_unique_symbol(self.ls, name_path, relative_path)
+        location = symbol.get("location")
+        if not location:
+            raise SymbolResolutionError(
+                f"Symbol {name_path!r} has no source location."
+            )
+
+        ref_relative_path = location["relativePath"]
+        if ref_relative_path is None:
+            raise SymbolResolutionError(
+                f"Symbol {name_path!r} has no relative path."
+            )
+
+        line = location["range"]["start"]["line"]
+        column = location["range"]["start"]["character"]
+
+        references = self.ls.request_references(ref_relative_path, line, column)
+
+        results: list[dict[str, object]] = []
+        for ref in references:
+            ref_rel = ref.get("relativePath")
+            if ref_rel is None:
+                continue
+            ref_line = ref["range"]["start"]["line"]
+            ref_col = ref["range"]["start"]["character"]
+            ref_end_line = ref["range"]["end"]["line"]
+
+            # Try to get the symbol at the reference location for richer info
+            sym = self.ls._request_symbol_at_location(ref_rel, ref_line, ref_col)
+            if sym is not None:
+                try:
+                    np = compute_name_path(sym)
+                except Exception:
+                    np = sym.get("name", Path(ref_rel).stem)
+                kind_str = SymbolKind(sym["kind"]).name
+            else:
+                np = Path(ref_rel).stem
+                kind_str = "Reference"
+
+            location_str = f"{ref_rel}:{ref_line + 1}-{ref_end_line + 1}"
+
+            results.append({
+                "name_path": np,
+                "kind": kind_str,
+                "location": location_str,
+            })
+
+        return results
 
     # -- helpers ------------------------------------------------------------
 
@@ -161,6 +221,11 @@ def main() -> int:
                 result = bridge.shutdown()
                 respond(request_id, True, result)
                 return 0
+            elif method == "get_references":
+                result = bridge.get_references(
+                    name_path=str(request["name_path"]),
+                    relative_path=request.get("relative_path"),
+                )
             else:
                 raise ValueError(f"Unknown method: {method}")
 

@@ -94,9 +94,9 @@ export const toolSchemas = {
     ], { description: "Resolution mode. Default declaration." })),
   }),
 
-  find_referencing_symbols: Type.Object({
-    ...NamePathLookup,
-    kinds: KindList,
+  get_references: Type.Object({
+    name_path: NamePath,
+    relative_path: Type.Optional(RelativePath),
   }),
 
   find_declaration: Type.Object({

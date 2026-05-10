@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Regression test for the Serena bridge init/shutdown lifecycle (Issue #1). */
+/** Regression test for the Serena bridge lifecycle and get_references tool (Issues #1, #6). */
 
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
@@ -27,6 +27,28 @@ async function writeTypeScriptFixture(): Promise<void> {
   await writeFile(path.join(fixtureRoot, "src", "index.ts"), `export function greet(name: string): string {
   return \`Hello, \${name}\`;
 }
+`);
+}
+
+async function writeTypeScriptFixtureWithReferences(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(path.join(fixtureRoot, "src"), { recursive: true });
+  await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ type: "module" }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "tsconfig.json"), JSON.stringify({
+    compilerOptions: { target: "ES2020", module: "ESNext", moduleResolution: "Node", strict: true },
+    include: ["src/**/*.ts"],
+  }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "src", "index.ts"), `export class Greeter {
+  greet(name: string): string {
+    return \`Hello, \${name}\`;
+  }
+}
+`);
+  await writeFile(path.join(fixtureRoot, "src", "caller.ts"), `import { Greeter } from "./index";
+
+const g = new Greeter();
+const msg = g.greet("world");
+console.log(msg);
 `);
 }
 
@@ -82,7 +104,43 @@ async function run(): Promise<void> {
 
   await client.shutdown();
 
-  console.log(`PASS jsonl regression (init/shutdown): ${fixtureRoot}`);
+  // --- get_references tool ---
+  await writeTypeScriptFixtureWithReferences();
+  const refResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(refResult.ok === true, `TypeScript init for references should succeed: ${JSON.stringify(refResult)}`);
+
+  const references = await client.callTool("get_references", {
+    name_path: "Greeter/greet",
+  }) as Array<Record<string, unknown>>;
+
+  assert(Array.isArray(references), `get_references should return an array: ${JSON.stringify(references)}`);
+  assert(references.length >= 2, `Expected at least 2 references (declaration + caller): got ${references.length}`);
+
+  for (const ref of references) {
+    assert(typeof ref.name_path === "string", `ref.name_path should be a string: ${JSON.stringify(ref)}`);
+    assert(typeof ref.kind === "string", `ref.kind should be a string: ${JSON.stringify(ref)}`);
+    assert(typeof ref.location === "string", `ref.location should be a string: ${JSON.stringify(ref)}`);
+    assert(ref.location.includes(":"), `ref.location should contain ':' (file:lines): ${JSON.stringify(ref)}`);
+  }
+
+  console.log(`get_references OK: ${references.length} references found`);
+  for (const ref of references) {
+    console.log(`  ${ref.name_path} (${ref.kind}) at ${ref.location}`);
+  }
+
+  // --- get_references with relative_path scoping ---
+  const scopedRefs = await client.callTool("get_references", {
+    name_path: "Greeter/greet",
+    relative_path: "src/caller.ts",
+  }) as Array<Record<string, unknown>>;
+  assert(Array.isArray(scopedRefs), `Scoped get_references should return an array: ${JSON.stringify(scopedRefs)}`);
+  // When scoped to caller.ts, should find at least the usage there
+  assert(scopedRefs.length >= 1, `Expected at least 1 reference scoped to caller.ts: got ${scopedRefs.length}`);
+  console.log(`get_references with relative_path OK: ${scopedRefs.length} references found`);
+
+  await client.shutdown();
+
+  console.log(`PASS jsonl regression: ${fixtureRoot}`);
 }
 
 run().catch(async (error) => {
