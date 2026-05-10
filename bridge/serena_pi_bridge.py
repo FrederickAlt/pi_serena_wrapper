@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Minimal JSONL bridge that starts SolidLSP for a given project.
+"""JSONL bridge that starts SolidLSP for a given project and dispatches tools.
 
-This is the bootstrap bridge for Issue #1 — it handles init/shutdown lifecycle
-only.  Tool dispatch will be added in follow-up issues.
+Handles init/shutdown lifecycle plus tool dispatch for get_type (Issue #5)
+and will be extended with further tools in follow-up issues.
 """
 
 from __future__ import annotations
@@ -22,7 +22,14 @@ import yaml
 
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import Language, LanguageServerConfig
+from solidlsp.ls_types import SymbolKind
 from solidlsp.settings import SolidLSPSettings
+
+from name_path import (
+    compute_name_path,
+    resolve_unique_symbol,
+    SymbolResolutionError,
+)
 
 PACKAGE_ROOT = _BRIDGE_DIR.parent
 SERENA_HOME = PACKAGE_ROOT / ".serena-data"
@@ -86,6 +93,71 @@ class Bridge:
         self.cwd = None
         return "OK"
 
+    # -- tool dispatch -------------------------------------------------------
+
+    def call_tool(self, tool_name: str, params: dict[str, object]) -> dict[str, object]:
+        """Dispatch a tool call to the appropriate handler."""
+        if self.ls is None:
+            raise RuntimeError("Bridge not initialized. Call init first.")
+
+        if tool_name == "get_type":
+            return self._get_type(params)
+        else:
+            raise ValueError(f"Unknown tool: {tool_name}")
+
+    # -- tool implementations ------------------------------------------------
+
+    def _get_type(self, params: dict[str, object]) -> dict[str, object]:
+        """Resolve a name_path to its defining symbol and return compact info."""
+        name_path = str(params["name_path"])
+        relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
+
+        try:
+            symbol = resolve_unique_symbol(self.ls, name_path, relative_path)
+        except SymbolResolutionError:
+            raise  # re-raise to be caught by the caller
+
+        # Get the position from selectionRange (fall back to range)
+        selection_range = symbol.get("selectionRange") or symbol.get("range")
+        if selection_range is None:
+            raise ValueError("Symbol has no selectionRange or range.")
+
+        start = selection_range["start"]
+        line = start["line"]
+        column = start["character"]
+
+        location = symbol.get("location") or {}
+        relative_file_path = location.get("relativePath")
+        if not relative_file_path:
+            raise ValueError("Symbol has no relativePath in location.")
+
+        # Go to definition
+        defining = self.ls.request_defining_symbol(
+            relative_file_path,  # type: ignore[arg-type]
+            line,
+            column,
+        )
+
+        if defining is None:
+            raise ValueError("Could not resolve type definition.")
+
+        # Format compact result (1-based lines for user-facing output)
+        defining_location = defining.get("location") or {}
+        defining_range = defining.get("range") or defining.get("selectionRange") or {}
+
+        start_line = defining_range.get("start", {}).get("line", 0) + 1
+        end_line = defining_range.get("end", {}).get("line", 0) + 1
+
+        result: dict[str, object] = {
+            "name_path": compute_name_path(defining),
+            "kind": SymbolKind(defining["kind"]).name,
+            "location": (
+                f"{defining_location.get('relativePath', '')}:"
+                f"{start_line}-{end_line}"
+            ),
+        }
+        return result
+
     # -- helpers ------------------------------------------------------------
 
     @staticmethod
@@ -132,15 +204,19 @@ def respond(
     ok: bool,
     result: object = None,
     error: str | None = None,
+    error_data: dict[str, object] | None = None,
 ) -> None:
     payload: dict[str, object] = {"id": request_id, "ok": ok}
     if ok:
         payload["result"] = result
     else:
-        payload["error"] = {
+        error_payload: dict[str, object] = {
             "kind": "error",
             "message": error or "Unknown error",
         }
+        if error_data:
+            error_payload.update(error_data)
+        payload["error"] = error_payload
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
@@ -161,10 +237,30 @@ def main() -> int:
                 result = bridge.shutdown()
                 respond(request_id, True, result)
                 return 0
+            elif method == "call_tool":
+                tool_name = str(request["tool_name"])
+                params = request.get("params", {})
+                if not isinstance(params, dict):
+                    raise ValueError("params must be a JSON object")
+                result = bridge.call_tool(tool_name, params)
             else:
                 raise ValueError(f"Unknown method: {method}")
 
             respond(request_id, True, result)
+        except SymbolResolutionError as exc:
+            traceback.print_exc(file=sys.stderr)
+            try:
+                respond(
+                    request_id,
+                    False,
+                    error=str(exc),
+                    error_data={
+                        "kind": "ambiguity",
+                        "candidates": exc.candidates,
+                    },
+                )
+            except Exception:
+                pass  # broken pipe — process will exit anyway
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             try:

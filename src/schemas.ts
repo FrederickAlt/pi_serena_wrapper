@@ -61,6 +61,11 @@ const NamePathLookup = {
 // ---------------------------------------------------------------------------
 
 export const toolSchemas = {
+  get_type: Type.Object({
+    name_path: NamePath,
+    relative_path: Type.Optional(RelativePath),
+  }),
+
   get_symbols_overview: Type.Object({
     relative_path: RelativePath,
     depth: Type.Optional(Type.Number({ description: "Descendant depth to include. Default 0." })),
@@ -74,33 +79,9 @@ export const toolSchemas = {
     max_matches: Type.Optional(Type.Number({ description: "Maximum number of symbol matches to return. -1 means unlimited." })),
   }),
 
-  get_symbol_from_snippet: Type.Object({
-    relative_path: RelativePath,
-    code_snippet: Type.String({
-      description: "Exact source code snippet containing the symbol occurrence to resolve. Prefer enough surrounding code to make it unique.",
-    }),
-    symbol_text: Type.String({
-      description: "Exact symbol text inside code_snippet where the LSP cursor should be placed.",
-    }),
-    line: Type.Optional(Type.Number({
-      description: "Optional 1-based line filter. Only snippet occurrences spanning this line are considered.",
-    })),
-    column: Type.Optional(Type.Number({
-      description: "Optional 1-based column filter. Requires line; only occurrences whose symbol_text covers this column are considered.",
-    })),
-    resolve: Type.Optional(Type.Union([
-      Type.Literal("declaration"),
-      Type.Literal("type_definition"),
-    ], { description: "Resolution mode. Default declaration." })),
-  }),
-
   find_referencing_symbols: Type.Object({
     ...NamePathLookup,
     kinds: KindList,
-  }),
-
-  find_declaration: Type.Object({
-    ...NamePathLookup,
   }),
 
   find_implementations: Type.Object({

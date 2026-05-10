@@ -4,9 +4,9 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { SubprocessTransport, type JsonRpcTransport, DEFAULT_TIMEOUT_MS } from "./transport.js";
+import { SubprocessTransport, type JsonRpcTransport, DEFAULT_TIMEOUT_MS, SerenaError } from "./transport.js";
 
-export { JsonValue } from "./transport.js";
+export { JsonValue, SerenaError } from "./transport.js";
 
 // ---------------------------------------------------------------------------
 // Helpers (Python environment management)
@@ -99,6 +99,15 @@ export class SerenaBridgeClient {
       // process may have exited before sending response — that's fine
     }
     await this.transport.shutdown();
+  }
+
+  /** Call a tool by name with the given params. Returns the tool result on success.
+   *  Throws SerenaError on tool-level errors (including ambiguity with candidates). */
+  async callTool(toolName: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    if (!this.initializedFor) {
+      throw new Error("Bridge not initialized. Call init() first.");
+    }
+    return this.transport.send("call_tool", { tool_name: toolName, params }, signal);
   }
 
   // -- private --------------------------------------------------------------
