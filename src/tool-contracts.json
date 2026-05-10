@@ -1,8 +1,26 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "pi-serena-lsp Tool Contracts",
-  "description": "Shared JSON contract defining parameters for all 7 Serena LSP tools exposed to the Pi coding agent. This file is the single source of truth for parameter types, required fields, and descriptions across the TypeScript and Python sides.",
+  "description": "Shared JSON contract defining parameters for all Serena LSP tools exposed to the Pi coding agent. This file is the single source of truth for parameter types, required fields, and descriptions across the TypeScript and Python sides.",
   "tools": {
+    "get_type": {
+      "description": "Resolve a name_path to its defining type symbol (interface, class, type alias, etc.) and return compact symbol information.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "name_path": {
+            "type": "string",
+            "description": "Serena symbol name path to resolve to a type definition."
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "Optional path to a source file or directory, relative to the current project root, to scope the search."
+          }
+        },
+        "required": ["name_path"],
+        "additionalProperties": false
+      }
+    },
     "get_document_symbols": {
       "description": "Get a plain-text tree of document symbols. Each line is `Kind Name` with 2 spaces per nesting level.",
       "params": {
@@ -52,41 +70,6 @@
         "additionalProperties": false
       }
     },
-    "get_symbol_from_snippet": {
-      "description": "Resolve a concrete source occurrence to Serena-style symbol references.",
-      "params": {
-        "type": "object",
-        "properties": {
-          "relative_path": {
-            "type": "string",
-            "description": "Path to a source file or directory, relative to the current project root."
-          },
-          "code_snippet": {
-            "type": "string",
-            "description": "Exact source code snippet containing the symbol occurrence to resolve. Prefer enough surrounding code to make it unique."
-          },
-          "symbol_text": {
-            "type": "string",
-            "description": "Exact symbol text inside code_snippet where the LSP cursor should be placed."
-          },
-          "line": {
-            "type": "number",
-            "description": "Optional 1-based line filter. Only snippet occurrences spanning this line are considered."
-          },
-          "column": {
-            "type": "number",
-            "description": "Optional 1-based column filter. Requires line; only occurrences whose symbol_text covers this column are considered."
-          },
-          "resolve": {
-            "type": "string",
-            "enum": ["declaration", "type_definition"],
-            "description": "Resolution mode. Default declaration."
-          }
-        },
-        "required": ["relative_path", "code_snippet", "symbol_text"],
-        "additionalProperties": false
-      }
-    },
     "find_referencing_symbols": {
       "description": "Find symbols that reference a given Serena symbol.",
       "params": {
@@ -104,24 +87,6 @@
             "type": "array",
             "items": { "type": "number" },
             "description": "LSP SymbolKind integer values."
-          }
-        },
-        "required": ["relative_path", "name_path"],
-        "additionalProperties": false
-      }
-    },
-    "find_declaration": {
-      "description": "Resolve the declaration/definition for a Serena symbol using Serena's LSP backend.",
-      "params": {
-        "type": "object",
-        "properties": {
-          "relative_path": {
-            "type": "string",
-            "description": "Path to a source file or directory, relative to the current project root."
-          },
-          "name_path": {
-            "type": "string",
-            "description": "Serena symbol name path for a named code entity in the symbol tree, for example MyClass/my_method or /MyClass/my_method."
           }
         },
         "required": ["relative_path", "name_path"],

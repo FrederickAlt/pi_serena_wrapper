@@ -2,3 +2,7 @@ sensai-utils
 pathspec
 jsonschema
 pyyaml
+psutil
+charset-normalizer
+requests
+overrides

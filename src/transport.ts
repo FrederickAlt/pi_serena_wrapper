@@ -13,6 +13,18 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
+/** Structured error from the Serena bridge. Carries optional error kind and data. */
+export class SerenaError extends Error {
+  constructor(
+    message: string,
+    public readonly errorKind: string = "error",
+    public readonly errorData: Record<string, unknown> = {},
+  ) {
+    super(message);
+    this.name = "SerenaError";
+  }
+}
+
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
@@ -216,11 +228,26 @@ export class SubprocessTransport implements JsonRpcTransport {
     if (response.ok) {
       pending.resolve(response.result);
     } else {
-      const errorMessage =
-        typeof response.error === "object" && response.error !== null && "message" in response.error
-          ? String((response.error as Record<string, unknown>).message)
-          : String(response.error ?? "Unknown Serena bridge error");
-      pending.reject(new Error(errorMessage));
+      const errorObj =
+        typeof response.error === "object" && response.error !== null
+          ? (response.error as Record<string, unknown>)
+          : null;
+      const errorMessage = errorObj && "message" in errorObj
+        ? String(errorObj.message)
+        : String(response.error ?? "Unknown Serena bridge error");
+      const errorKind = errorObj && "kind" in errorObj
+        ? String(errorObj.kind)
+        : "error";
+      // Exclude message and kind from errorData (they're already captured)
+      const errorData: Record<string, unknown> = {};
+      if (errorObj) {
+        for (const [k, v] of Object.entries(errorObj)) {
+          if (k !== "message" && k !== "kind") {
+            errorData[k] = v;
+          }
+        }
+      }
+      pending.reject(new SerenaError(errorMessage, errorKind, errorData));
     }
   }
 }

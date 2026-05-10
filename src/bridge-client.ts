@@ -4,10 +4,10 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { SubprocessTransport, type JsonRpcTransport, DEFAULT_TIMEOUT_MS } from "./transport.js";
+import { SubprocessTransport, type JsonRpcTransport, DEFAULT_TIMEOUT_MS, SerenaError } from "./transport.js";
 import type { SerenaToolName } from "./schemas.js";
 
-export { JsonValue } from "./transport.js";
+export { JsonValue, SerenaError } from "./transport.js";
 
 // ---------------------------------------------------------------------------
 // Helpers (Python environment management)
@@ -59,7 +59,7 @@ async function runSetupCommand(command: string, args: string[], cwd: string): Pr
 }
 
 // ---------------------------------------------------------------------------
-// SerenaBridgeClient — protocol layer only (init + shutdown for now)
+// SerenaBridgeClient — protocol layer (init, shutdown, call_tool)
 // ---------------------------------------------------------------------------
 
 export class SerenaBridgeClient {
@@ -92,13 +92,6 @@ export class SerenaBridgeClient {
     return result;
   }
 
-  async callTool(toolName: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    if (!this.transport.isAlive()) {
-      throw new Error("Serena bridge is not running. Call init() first.");
-    }
-    return await this.transport.send("call_tool", { tool_name: toolName, ...params }, signal);
-  }
-
   async shutdown(): Promise<void> {
     if (!this.transport.isAlive()) return;
     try {
@@ -107,6 +100,13 @@ export class SerenaBridgeClient {
       // process may have exited before sending response — that's fine
     }
     await this.transport.shutdown();
+  }
+
+  async callTool(toolName: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    if (!this.transport.isAlive()) {
+      throw new Error("Serena bridge is not running. Call init() first.");
+    }
+    return await this.transport.send("call_tool", { tool_name: toolName, params }, signal);
   }
 
   // -- private --------------------------------------------------------------
