@@ -61,6 +61,7 @@ export class SubprocessTransport implements JsonRpcTransport {
   private stdoutBuffer = "";
   private _stderr = "";
   private onDeathCallback: (() => void) | undefined;
+  private _shuttingDown = false;
 
   constructor(
     private readonly python: string,
@@ -101,14 +102,17 @@ export class SubprocessTransport implements JsonRpcTransport {
       this._stderr = (this._stderr + chunk).slice(-12_000);
     });
     this.proc.on("exit", (code, sig) => {
-      const suffix = this._stderr ? `\nBridge stderr:\n${this._stderr}` : "";
-      const err = new Error(`Serena bridge exited (${code ?? sig}).${suffix}`);
-      for (const pending of this.pending.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(err);
+      if (!this._shuttingDown) {
+        const suffix = this._stderr ? `\nBridge stderr:\n${this._stderr}` : "";
+        const err = new Error(`Serena bridge exited (${code ?? sig}).${suffix}`);
+        for (const pending of this.pending.values()) {
+          clearTimeout(pending.timer);
+          pending.reject(err);
+        }
+        this.pending.clear();
       }
-      this.pending.clear();
       this.proc = undefined;
+      this._shuttingDown = false;
       this.onDeathCallback?.();
     });
   }
@@ -159,9 +163,19 @@ export class SubprocessTransport implements JsonRpcTransport {
     });
   }
 
-  async shutdown(_timeoutMs?: number): Promise<void> {
+  async shutdown(timeoutMs = 5_000): Promise<void> {
     if (!this.isAlive()) return;
-    this.proc!.kill();
+    this._shuttingDown = true;
+    const proc = this.proc!;
+    proc.kill();
+    // Wait briefly for the process to exit, but don't block indefinitely.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      proc.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
   // -- internal helpers -----------------------------------------------------

@@ -1,3 +1,4 @@
-serena-agent
+sensai-utils
+pathspec
 jsonschema
 pyyaml

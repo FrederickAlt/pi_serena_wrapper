@@ -49,13 +49,6 @@ function errorOutput(error: unknown): string {
   return String(error);
 }
 
-function shouldRetryPythonSetup(error: unknown): boolean {
-  const text = errorOutput(error);
-  return text.includes("Could not import a compatible pip-installed Serena package")
-    || text.includes("Python distribution serena-agent is not installed.")
-    || (text.includes("serena-agent") && text.includes("incompatible"));
-}
-
 async function runSetupCommand(command: string, args: string[], cwd: string): Promise<void> {
   try {
     await execFileAsync(command, args, { cwd, maxBuffer: 10 * 1024 * 1024 });
@@ -65,13 +58,12 @@ async function runSetupCommand(command: string, args: string[], cwd: string): Pr
 }
 
 // ---------------------------------------------------------------------------
-// SerenaBridgeClient — protocol layer only
+// SerenaBridgeClient — protocol layer only (init + shutdown for now)
 // ---------------------------------------------------------------------------
 
 export class SerenaBridgeClient {
   private readonly transport: JsonRpcTransport;
   private initializedFor: string | undefined;
-  private python: string | undefined;
 
   constructor(private readonly root = packageRoot()) {
     const python = localPython(this.root);
@@ -89,19 +81,14 @@ export class SerenaBridgeClient {
     });
   }
 
-  async callTool(
-    cwd: string,
-    tool: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<unknown> {
-    await this.init(cwd, signal);
-    return this.transport.send("call_tool", { tool, args }, signal);
-  }
-
-  async listTools(cwd: string, signal?: AbortSignal): Promise<unknown> {
-    await this.init(cwd, signal);
-    return this.transport.send("list_tools", {}, signal);
+  async init(cwd: string, signal?: AbortSignal): Promise<unknown> {
+    if (this.initializedFor === cwd && this.transport.isAlive()) return;
+    if (this.transport.isAlive()) await this.shutdown();
+    await this.ensurePython();
+    this.transport.start();
+    const result = await this.transport.send("init", { cwd }, signal);
+    this.initializedFor = cwd;
+    return result;
   }
 
   async shutdown(): Promise<void> {
@@ -109,31 +96,14 @@ export class SerenaBridgeClient {
     try {
       await this.transport.send("shutdown", {}, undefined, 5_000);
     } catch {
-      // process may already be shutting down
+      // process may have exited before sending response — that's fine
     }
-    this.transport.shutdown();
+    await this.transport.shutdown();
   }
 
   // -- private --------------------------------------------------------------
 
-  private async init(cwd: string, signal?: AbortSignal): Promise<void> {
-    if (this.initializedFor === cwd && this.transport.isAlive()) return;
-    if (this.transport.isAlive()) await this.shutdown();
-    await this.ensurePython();
-    this.transport.start();
-    try {
-      await this.transport.send("init", { cwd }, signal);
-    } catch (error) {
-      if (!shouldRetryPythonSetup(error)) throw error;
-      this.transport.shutdown();
-      await this.ensurePython({ reinstall: true });
-      this.transport.start();
-      await this.transport.send("init", { cwd }, signal);
-    }
-    this.initializedFor = cwd;
-  }
-
-  private async ensurePython(options: { reinstall?: boolean } = {}): Promise<void> {
+  private async ensurePython(): Promise<void> {
     const python = localPython(this.root);
     const pip = localPip(this.root);
     const requirements = requirementsPath(this.root);
@@ -143,14 +113,12 @@ export class SerenaBridgeClient {
       await runSetupCommand("python3", ["-m", "venv", ".venv"], this.root);
     }
 
-    if (options.reinstall || createdVenv) {
+    if (createdVenv) {
       await runSetupCommand(pip, ["install", "--upgrade", "-r", requirements], this.root);
     }
 
     if (!existsSync(python)) {
       throw new Error(`Serena Python environment is missing. Run: ${setupCommand(this.root)}`);
     }
-
-    this.python = python;
   }
 }

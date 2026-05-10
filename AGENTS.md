@@ -28,7 +28,7 @@ pi-serena-lsp/
 ├── tool-contracts.json         # Shared JSON schema — single source of truth for tool params
 ├── package.json                # pi extension manifest (pi.extensions → src/extension.ts)
 ├── tsconfig.json               # TypeScript config (noEmit, type-check only)
-└── requirements.txt            # Python deps (serena-agent + jsonschema)
+└── requirements.txt            # Python deps (sensai-utils + pathspec + jsonschema + pyyaml)
 ```
 
 ## Serena Repo
@@ -69,7 +69,7 @@ pi harness (Node/TS)  ──JSONL over stdin/stdout──►  serena_pi_bridge.p
 
 ## Key data directories
 
-- **`.venv/`** — Package-local Python virtualenv with `serena-agent` + `jsonschema` installed. Created by `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
+- **`.venv/`** — Package-local Python virtualenv with vendored solidlsp dependencies (`sensai-utils`, `pathspec`, `jsonschema`, `pyyaml`). Created by `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
 - **`.serena-data/`** — Serena home directory: language server installs, memories, prompt templates. Also contains `failed-tool-calls.jsonl` — log of every failed tool invocation (timestamp, args, error).
 - **`.serena-projects/`** — Per-project Serena metadata, keyed by `<folder-name>-<sha256-prefix>`. The bridge stores project data here so Serena doesn't pollute the user's project.
 
