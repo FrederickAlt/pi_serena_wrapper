@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal JSONL bridge that starts SolidLSP for a given project.
-
-This is the bootstrap bridge for Issue #1 — it handles init/shutdown lifecycle
-only.  Tool dispatch will be added in follow-up issues.
-"""
+"""JSONL bridge that starts SolidLSP and dispatches tool calls."""
 
 from __future__ import annotations
 
@@ -22,7 +18,15 @@ import yaml
 
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import Language, LanguageServerConfig
+from solidlsp.ls_types import SymbolKind
+from solidlsp.lsp_protocol_handler.server import LSPError
 from solidlsp.settings import SolidLSPSettings
+
+from name_path import (
+    SymbolResolutionError,
+    compute_name_path,
+    resolve_unique_symbol,
+)
 
 PACKAGE_ROOT = _BRIDGE_DIR.parent
 SERENA_HOME = PACKAGE_ROOT / ".serena-data"
@@ -86,6 +90,61 @@ class Bridge:
         self.cwd = None
         return "OK"
 
+    # -- tools ---------------------------------------------------------------
+
+    def get_implementations(
+        self, name_path: str, relative_path: str | None = None
+    ) -> dict[str, object]:
+        """Resolve *name_path* to a unique symbol and return its implementing symbols."""
+        if self.ls is None:
+            raise RuntimeError("Language server not initialized")
+
+        try:
+            symbol = resolve_unique_symbol(self.ls, name_path, relative_path)
+        except SymbolResolutionError:
+            raise  # re-raise — handled by the caller
+
+        location = symbol.get("location") or {}
+        relative_file_path = location.get("relativePath", "")
+        range_info = location.get("range", {})
+        line = range_info.get("start", {}).get("line", 0)
+        column = range_info.get("start", {}).get("character", 0)
+
+        try:
+            results = self.ls.request_implementing_symbols(
+                relative_file_path, line, column
+            )
+        except Exception as exc:
+            # Check for unimplemented LS capability (MethodNotFound from LSP).
+            if isinstance(exc, LSPError):
+                code = getattr(exc, "code", None)
+                if code == -32601:
+                    return {
+                        "error": "textDocument/implementation not supported by this language server."
+                    }
+            msg = str(exc).lower()
+            if "method not found" in msg or "-32601" in msg:
+                return {
+                    "error": "textDocument/implementation not supported by this language server."
+                }
+            raise
+
+        result_list: list[dict[str, object]] = []
+        for sym in results:
+            sym_loc = sym.get("location") or {}
+            sym_range = sym_loc.get("range", {})
+            result_list.append({
+                "name_path": compute_name_path(sym),
+                "kind": SymbolKind(sym["kind"]).name,
+                "location": (
+                    f"{sym_loc.get('relativePath', '')}:"
+                    f"{sym_range.get('start', {}).get('line', 0)}-"
+                    f"{sym_range.get('end', {}).get('line', 0)}"
+                ),
+            })
+
+        return {"symbols": result_list}
+
     # -- helpers ------------------------------------------------------------
 
     @staticmethod
@@ -131,16 +190,19 @@ def respond(
     request_id: object,
     ok: bool,
     result: object = None,
-    error: str | None = None,
+    error: str | dict[str, object] | None = None,
 ) -> None:
     payload: dict[str, object] = {"id": request_id, "ok": ok}
     if ok:
         payload["result"] = result
     else:
-        payload["error"] = {
-            "kind": "error",
-            "message": error or "Unknown error",
-        }
+        if isinstance(error, dict):
+            payload["error"] = error
+        else:
+            payload["error"] = {
+                "kind": "error",
+                "message": error or "Unknown error",
+            }
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
@@ -161,10 +223,33 @@ def main() -> int:
                 result = bridge.shutdown()
                 respond(request_id, True, result)
                 return 0
+            elif method == "get_implementations":
+                name_path = str(request["name_path"])
+                relative_path = request.get("relative_path")
+                result = bridge.get_implementations(
+                    name_path,
+                    str(relative_path) if relative_path else None,
+                )
             else:
                 raise ValueError(f"Unknown method: {method}")
 
             respond(request_id, True, result)
+        except SymbolResolutionError as sre:
+            traceback.print_exc(file=sys.stderr)
+            try:
+                error_payload: dict[str, object] = {
+                    "kind": "symbol_resolution_error",
+                    "message": str(sre),
+                }
+                if sre.candidates:
+                    error_payload["candidates"] = sre.candidates
+                respond(
+                    request_id,
+                    False,
+                    error=error_payload,
+                )
+            except Exception:
+                pass
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             try:

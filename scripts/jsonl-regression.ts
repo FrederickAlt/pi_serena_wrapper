@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-/** Regression test for the Serena bridge init/shutdown lifecycle (Issue #1). */
+/** Regression test for the Serena bridge init/shutdown lifecycle (Issue #1)
+ * and get_implementations tool (Issue #7). */
 
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
@@ -27,6 +28,16 @@ async function writeTypeScriptFixture(): Promise<void> {
   await writeFile(path.join(fixtureRoot, "src", "index.ts"), `export function greet(name: string): string {
   return \`Hello, \${name}\`;
 }
+
+export interface Greeter {
+  greet(name: string): string;
+}
+
+export class FriendlyGreeter implements Greeter {
+  greet(name: string): string {
+    return \`Hi there, \${name}!\`;
+  }
+}
 `);
 }
 
@@ -35,6 +46,14 @@ async function writePythonFixture(): Promise<void> {
   await mkdir(fixtureRoot, { recursive: true });
   await writeFile(path.join(fixtureRoot, "test.py"), `def greet(name: str) -> str:
     return f"Hello, {name}"
+
+class Greeter:
+    def greet(self, name: str) -> str:
+        raise NotImplementedError
+
+class FriendlyGreeter(Greeter):
+    def greet(self, name: str) -> str:
+        return f"Hi there, {name}!"
 `);
 }
 
@@ -82,7 +101,62 @@ async function run(): Promise<void> {
 
   await client.shutdown();
 
-  console.log(`PASS jsonl regression (init/shutdown): ${fixtureRoot}`);
+  // -----------------------------------------------------------------------
+  // get_implementations: successful implementation lookup (TypeScript)
+  // -----------------------------------------------------------------------
+
+  await writeTypeScriptFixture();
+  const tsImplInit = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(tsImplInit.ok === true, `TS init for impl test should succeed: ${JSON.stringify(tsImplInit)}`);
+
+  const implResult = await client.callTool("get_implementations", {
+    name_path: "Greeter/greet",
+  }) as Record<string, unknown>;
+
+  assert(
+    implResult && typeof implResult === "object" && "symbols" in implResult,
+    `get_implementations should return symbols: ${JSON.stringify(implResult)}`,
+  );
+
+  const symbols = (implResult as Record<string, unknown>).symbols as Array<Record<string, unknown>>;
+  assert(Array.isArray(symbols) && symbols.length > 0, "Should have at least one implementing symbol");
+
+  const implSymbol = symbols[0];
+  assert(typeof implSymbol.name_path === "string", "Implementation should have name_path");
+  assert(typeof implSymbol.kind === "string", "Implementation should have kind");
+  assert(typeof implSymbol.location === "string", "Implementation should have location");
+  console.log(`get_implementations OK: found ${symbols.length} implementing symbol(s) for Greeter/greet`);
+  console.log(`  name_path=${implSymbol.name_path} kind=${implSymbol.kind} location=${implSymbol.location}`);
+
+  await client.shutdown();
+
+  // -----------------------------------------------------------------------
+  // get_implementations: graceful error when LS doesn't support the method
+  // (Python LS does not support textDocument/implementation)
+  // -----------------------------------------------------------------------
+
+  await writePythonFixture();
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - python\n",
+  );
+  const pyImplInit = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(pyImplInit.ok === true, `Python init for impl test should succeed: ${JSON.stringify(pyImplInit)}`);
+
+  const pyImplResult = await client.callTool("get_implementations", {
+    name_path: "Greeter/greet",
+  }) as Record<string, unknown>;
+
+  // Python LS doesn't support textDocument/implementation — should get a graceful error
+  assert(
+    pyImplResult && typeof pyImplResult === "object" && "error" in pyImplResult,
+    `Python get_implementations should return graceful error: ${JSON.stringify(pyImplResult)}`,
+  );
+  console.log(`get_implementations graceful error OK: ${(pyImplResult as Record<string, unknown>).error}`);
+
+  await client.shutdown();
+
+  console.log(`PASS jsonl regression (init/shutdown + get_implementations): ${fixtureRoot}`);
 }
 
 run().catch(async (error) => {

@@ -128,21 +128,21 @@
         "additionalProperties": false
       }
     },
-    "find_implementations": {
-      "description": "Find implementations for a symbol using Serena's LSP backend when the active language server supports it.",
+    "get_implementations": {
+      "description": "Get implementations for a symbol using Serena's LSP backend when the active language server supports it.",
       "params": {
         "type": "object",
         "properties": {
-          "relative_path": {
-            "type": "string",
-            "description": "Path to a source file or directory, relative to the current project root."
-          },
           "name_path": {
             "type": "string",
             "description": "Serena symbol name path for a named code entity in the symbol tree, for example MyClass/my_method or /MyClass/my_method."
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "Path to a source file or directory, relative to the current project root."
           }
         },
-        "required": ["relative_path", "name_path"],
+        "required": ["name_path"],
         "additionalProperties": false
       }
     },
