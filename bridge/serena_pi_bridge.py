@@ -6,6 +6,7 @@ Issue #3 — find_symbol tool.
 Issue #4 — get_document_symbols tool.
 Issue #5 — get_type tool.
 Issue #6 — get_references tool.
+Issue #7 — get_implementations tool.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ import yaml
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.ls_types import SymbolKind, UnifiedSymbolInformation
+from solidlsp.lsp_protocol_handler.server import LSPError
 from solidlsp.settings import SolidLSPSettings
 
 from name_path import (
@@ -125,6 +127,8 @@ class Bridge:
             return self._get_type(params)
         elif tool_name == "get_references":
             return self._get_references(params)
+        elif tool_name == "get_implementations":
+            return self._get_implementations(params)
         else:
             raise ValueError(f"Tool not implemented: {tool_name}")
         self._validate_params(tool_name, params, tool_contract)
@@ -374,6 +378,57 @@ class Bridge:
             })
 
         return results
+
+    # -- get_implementations tool -------------------------------------------
+
+    def _get_implementations(self, params: dict[str, object]) -> dict[str, object]:
+        """Resolve *name_path* to a unique symbol and return its implementing symbols."""
+        name_path = str(params["name_path"])
+        relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
+
+        assert self.ls is not None
+        symbol = resolve_unique_symbol(self.ls, name_path, relative_path)  # type: ignore[arg-type]
+
+        location = symbol.get("location") or {}
+        relative_file_path = location.get("relativePath", "")
+        range_info = location.get("range", {})
+        line = range_info.get("start", {}).get("line", 0)
+        column = range_info.get("start", {}).get("character", 0)
+
+        try:
+            results = self.ls.request_implementing_symbols(
+                relative_file_path, line, column
+            )
+        except Exception as exc:
+            # Graceful error for unimplemented LS capability
+            if isinstance(exc, LSPError):
+                code = getattr(exc, "code", None)
+                if code == -32601:
+                    return {
+                        "error": "textDocument/implementation not supported by this language server."
+                    }
+            msg = str(exc).lower()
+            if "method not found" in msg or "-32601" in msg:
+                return {
+                    "error": "textDocument/implementation not supported by this language server."
+                }
+            raise
+
+        result_list: list[dict[str, object]] = []
+        for sym in results:
+            sym_loc = sym.get("location") or {}
+            sym_range = sym_loc.get("range", {})
+            result_list.append({
+                "name_path": compute_name_path(sym),
+                "kind": SymbolKind(sym["kind"]).name,
+                "location": (
+                    f"{sym_loc.get('relativePath', '')}:"
+                    f"{sym_range.get('start', {}).get('line', 0)}-"
+                    f"{sym_range.get('end', {}).get('line', 0)}"
+                ),
+            })
+
+        return {"symbols": result_list}
 
     # -- helpers ------------------------------------------------------------
 

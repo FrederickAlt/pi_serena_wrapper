@@ -86,8 +86,9 @@ export const toolSchemas = {
     relative_path: Type.Optional(RelativePath),
   }),
 
-  find_implementations: Type.Object({
-    ...NamePathLookup,
+  get_implementations: Type.Object({
+    name_path: NamePath,
+    relative_path: Type.Optional(RelativePath),
   }),
 
   rename_symbol: Type.Object({
