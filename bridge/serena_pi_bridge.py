@@ -15,12 +15,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from source_positions import resolve_all_source_positions
+import yaml
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SERENA_HOME = PACKAGE_ROOT / ".serena-data"
 PROJECT_DATA_ROOT = PACKAGE_ROOT / ".serena-projects"
 FAILED_TOOL_LOG = SERENA_HOME / "failed-tool-calls.jsonl"
-CONTRACT_PATH = PACKAGE_ROOT / "tool-contracts.json"
+CONTRACT_PATH = PACKAGE_ROOT / "src" / "tool-contracts.json"
 
 os.environ.setdefault("SERENA_HOME", str(SERENA_HOME))
 os.environ.setdefault("SERENA_USAGE_REPORTING", "false")
@@ -181,6 +182,12 @@ class Bridge:
         PROJECT_DATA_ROOT.mkdir(parents=True, exist_ok=True)
         project_data = self._project_data_path(project_root)
 
+        # Prepare project configuration BEFORE creating the agent so that
+        # Serena's ProjectConfig.from_yml() reads the merged result of
+        # project.yml + project.local.yml natively — no two-phase patching.
+        project_data.mkdir(parents=True, exist_ok=True)
+        self._prepare_project_config(project_root, project_data)
+
         config = SerenaConfig(
             gui_log_window=False,
             web_dashboard=False,
@@ -228,6 +235,84 @@ class Bridge:
         digest = hashlib.sha256(project_root.encode("utf-8")).hexdigest()[:12]
         folder_name = Path(project_root).name or "project"
         return PROJECT_DATA_ROOT / f"{folder_name}-{digest}"
+
+    def _prepare_project_config(self, project_root: str, project_data: Path) -> None:
+        """If ``.serenaproject.yml`` exists in *project_root*, prepare
+        ``project.yml`` and ``project.local.yml`` in *project_data*
+        BEFORE the agent is created so that Serena's
+        ``ProjectConfig.from_yml()`` reads the merged config natively.
+
+        When no ``.serenaproject.yml`` is present, this method is a no-op
+        — Serena handles first-init auto-generation normally.
+        """
+        # ---- 1. read user config -----------------------------------------
+        config_path = Path(project_root) / ".serenaproject.yml"
+        if not config_path.is_file():
+            return  # nothing to do — let Serena auto-generate freely
+
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                user_config: Any = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            raise RuntimeError(f"Invalid YAML in {config_path}: {exc}") from exc
+
+        if user_config is None:
+            return
+        if not isinstance(user_config, dict):
+            raise RuntimeError(
+                f"{config_path} must contain a YAML mapping, "
+                f"got {type(user_config).__name__}"
+            )
+
+        # Warn about unknown keys but don't block.
+        known_keys = {
+            "languages", "encoding", "ignore_all_files_in_gitignore",
+            "ignored_paths", "ls_specific_settings", "read_only",
+            "excluded_tools", "included_optional_tools", "fixed_tools",
+            "base_modes", "default_modes", "initial_prompt",
+            "symbol_info_budget", "line_ending",
+            "read_only_memory_patterns", "ignored_memory_patterns",
+        }
+        unknown = set(user_config.keys()) - known_keys
+        if unknown:
+            print(
+                f"[serena-bridge] Warning: ignoring unknown keys in "
+                f"{config_path}: {', '.join(sorted(unknown))}",
+                file=sys.stderr,
+            )
+            for key in unknown:
+                del user_config[key]
+
+        if not user_config:
+            return
+
+        # ---- 2. ensure project.yml exists (first-init guard) --------------
+        # On first init, project.yml doesn't exist yet.  If we let Serena
+        # auto-generate it, autogenerate() would also overwrite
+        # project.local.yml with a blank template, losing the user's
+        # overrides.  Instead, we create a minimal stub here so that
+        # from_yml() takes the read-and-merge path (which preserves
+        # project.local.yml).
+        project_yml = project_data / "project.yml"
+        if not project_yml.exists():
+            folder_name = Path(project_root).name or "project"
+            minimal = {
+                "project_name": folder_name,
+                "languages": [],
+            }
+            with open(project_yml, "w", encoding="utf-8") as f:
+                yaml.dump(minimal, f, default_flow_style=False, allow_unicode=True)
+
+        # ---- 3. write project.local.yml with user overrides ---------------
+        local_yml = project_data / "project.local.yml"
+        with open(local_yml, "w", encoding="utf-8") as f:
+            yaml.dump(
+                user_config,
+                f,
+                default_flow_style=False,
+                allow_unicode=True,
+                sort_keys=False,
+            )
 
     @staticmethod
     def _normalize_relative_path(base_dir: str, given_path: str) -> str:
@@ -731,7 +816,12 @@ def main() -> int:
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             retryable = _error_is_retryable(exc)
-            respond(request_id, False, error=f"{exc.__class__.__name__}: {exc}", retryable=retryable)
+            try:
+                respond(request_id, False, error=f"{exc.__class__.__name__}: {exc}", retryable=retryable)
+            except Exception:
+                # If we cannot respond (e.g. broken pipe), the process will
+                # exit anyway — avoid an uncaught exception crash.
+                pass
     return 0
 
 

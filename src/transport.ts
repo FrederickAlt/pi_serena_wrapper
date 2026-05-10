@@ -202,7 +202,11 @@ export class SubprocessTransport implements JsonRpcTransport {
     if (response.ok) {
       pending.resolve(response.result);
     } else {
-      pending.reject(new Error(String(response.error ?? "Unknown Serena bridge error")));
+      const errorMessage =
+        typeof response.error === "object" && response.error !== null && "message" in response.error
+          ? String((response.error as Record<string, unknown>).message)
+          : String(response.error ?? "Unknown Serena bridge error");
+      pending.reject(new Error(errorMessage));
     }
   }
 }

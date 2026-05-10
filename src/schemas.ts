@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * SYNC CONTRACT: tool-contracts.json (project root) is the single source of
+ * SYNC CONTRACT: tool-contracts.json (src/) is the single source of
  * truth for all parameter types, required fields, and descriptions across the
  * TypeScript ↔ Python seam.
  *
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const contractPath = join(__dirname, "..", "tool-contracts.json");
+const contractPath = join(__dirname, "tool-contracts.json");
 
 const require = createRequire(import.meta.url);
 interface ContractTool {
