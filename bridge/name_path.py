@@ -1,117 +1,200 @@
 """
-Name path computation for Serena symbols.
+name_path computation, matching, and unique-symbol resolution on top of
+SolidLSP's ``UnifiedSymbolInformation``.
 
-A name path is a ``/``-separated path **within a single source file** (e.g.
-``MyClass/my_method``). It does **not** include a file path.
-
-``name_path`` is always a **pattern**, not an exact identifier. It is matched
-component-by-component, right-to-left, each component exact:
-
-* ``send`` matches any symbol whose last component is ``send``
-* ``MyClass/send`` matches any symbol whose last two components are
-  ``MyClass`` / ``send``
-* ``/MyClass/send`` (absolute, leading ``/``) requires an exact full match
-
-For overloaded symbols the overload index is appended in brackets, e.g.
-``MyClass/myMethod[0]``.
+Shared infrastructure used by every pi-serena-lsp tool.
 """
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from solidlsp import SolidLanguageServer
     from solidlsp.ls_types import UnifiedSymbolInformation
 
-# LSP SymbolKind values that act as "structural" ancestors (File, Package) —
-# we stop walking parents when we hit one of these.
-_STRUCTURAL_KINDS: set[int] = {1, 4}  # File=1, Package=4
 
-_OVERLOAD_RE = re.compile(r"^(.*)\[(\d+)\]$")
-
+# ---------------------------------------------------------------------------
+# compute_name_path
+# ---------------------------------------------------------------------------
 
 def compute_name_path(symbol: UnifiedSymbolInformation) -> str:
-    """Compute the name path for a symbol by walking up its parent chain.
+    """Walk the ``parent`` chain of *symbol* and return a ``/``-separated path.
 
-    Stops at structural symbols (File, Package).  The path is built
-    root-to-leaf even though we walk leaf-to-root.
+    Example: ``SubprocessTransport/send`` for a method ``send`` inside a class
+    ``SubprocessTransport``.  When ``overload_idx`` is present, a ``[N]`` suffix
+    is appended (e.g. ``send[0]``).
+
+    File nodes (kind 2) and package nodes (kind 4) are **not** included in the
+    path — only named source symbols.
     """
+    from solidlsp.ls_types import SymbolKind  # late import to avoid circular dependency at module level
+
     parts: list[str] = []
-    cur: UnifiedSymbolInformation | None = symbol
-    while cur is not None:
-        if cur.get("kind") in _STRUCTURAL_KINDS:
-            break
-        name = cur["name"]
-        overload_idx = cur.get("overload_idx")
+    node: UnifiedSymbolInformation | None = symbol
+
+    while node is not None:
+        kind = node.get("kind")
+        if kind is not None and kind in (SymbolKind.File, SymbolKind.Package):
+            node = node.get("parent")
+            continue
+
+        name = node.get("name", "")
+        overload_idx = node.get("overload_idx")
         if overload_idx is not None:
             name = f"{name}[{overload_idx}]"
         parts.append(name)
-        cur = cur.get("parent")  # type: ignore[assignment]
+        node = node.get("parent")
+
     parts.reverse()
     return "/".join(parts)
 
 
-def _strip_overload_idx(component: str) -> str:
-    """Remove any ``[N]`` overload index from a name-path component."""
-    m = _OVERLOAD_RE.match(component)
-    return m.group(1) if m else component
-
+# ---------------------------------------------------------------------------
+# NamePathMatcher
+# ---------------------------------------------------------------------------
 
 class NamePathMatcher:
-    """Pattern matcher for Serena symbol name paths.
+    """Match a *path* pattern against computed ``name_path`` strings.
 
     Matching is component-by-component, right-to-left, each component exact:
 
-    * ``send`` matches any symbol whose last component equals ``send``
-    * ``MyClass/send`` matches any symbol whose last two components equal
-      ``MyClass``, ``send``
-    * ``/MyClass/send`` (leading ``/``) requires an exact full match
+    * ``"send"`` matches any symbol whose last component is ``send``.
+    * ``"SubprocessTransport/send"`` matches symbols whose last two components
+      are ``SubprocessTransport`` *and* ``send``.
+    * ``"/SubprocessTransport/send"`` (leading ``/``) requires an exact full match.
+
+    The pattern components themselves may include ``[N]`` overload indices.
     """
 
-    def __init__(self, name_path: str) -> None:
-        self._query = name_path
-        self._absolute = name_path.startswith("/")
-        q = name_path.lstrip("/")
-        self._query_parts = q.split("/") if q else []
-
-    @property
-    def query(self) -> str:
-        return self._query
+    def __init__(self, pattern: str) -> None:
+        self._absolute = pattern.startswith("/")
+        if self._absolute:
+            pattern = pattern[1:]
+        self._pattern_parts = [c for c in pattern.split("/") if c] if pattern else []
 
     def matches(self, name_path: str) -> bool:
-        """Return ``True`` if *name_path* matches the query pattern."""
-        parts = name_path.split("/")
+        """Return ``True`` if *name_path* is matched by this matcher's pattern."""
+        name_parts = [c for c in name_path.split("/") if c]
+
         if self._absolute:
             # Exact full match required
-            return parts == self._query_parts
-        # Right-to-left component match: last N components must equal query
-        n = len(self._query_parts)
-        if n == 0:
-            return False
-        return parts[-n:] == self._query_parts
+            if len(name_parts) != len(self._pattern_parts):
+                return False
+            return name_parts == self._pattern_parts
 
-    def last_symbol_text(self) -> str:
-        """Return the last component of the query name path (without overload index)."""
-        if not self._query_parts:
-            return ""
-        return _strip_overload_idx(self._query_parts[-1])
+        if len(self._pattern_parts) > len(name_parts):
+            return False
+
+        # Right-to-left component comparison
+        for p, n in zip(self._pattern_parts[::-1], name_parts[::-1]):
+            if p != n:
+                return False
+        return True
+
+    def __repr__(self) -> str:
+        return f"NamePathMatcher({self._pattern_parts!r}, absolute={self._absolute})"
+
+
+# ---------------------------------------------------------------------------
+# resolve_unique_symbol
+# ---------------------------------------------------------------------------
+
+class SymbolResolutionError(Exception):
+    """Raised when a symbol cannot be uniquely resolved from a ``name_path``."""
+
+    def __init__(self, name_path: str, message: str, candidates: list[dict[str, object]] | None = None) -> None:
+        super().__init__(message)
+        self.name_path = name_path
+        self.candidates = candidates or []
+
+    def __str__(self) -> str:
+        return f"Symbol resolution error for '{self.name_path}': {super().__str__()}"
 
 
 def resolve_unique_symbol(
-    symbols: list[UnifiedSymbolInformation],
-    matcher: NamePathMatcher,
-) -> UnifiedSymbolInformation | None:
-    """Return the unique symbol whose name path matches *matcher*, or ``None``.
+    ls: SolidLanguageServer,
+    name_path: str,
+    relative_path: str | None = None,
+) -> UnifiedSymbolInformation:
+    """Resolve *name_path* to a unique ``UnifiedSymbolInformation``.
 
-    Raises ``ValueError`` if more than one symbol matches.
+    1. Call ``request_full_symbol_tree`` (scoped to *relative_path* if given).
+    2. Flatten the tree.
+    3. Match every symbol's computed name_path against *name_path* via
+       ``NamePathMatcher``.
+    4. If exactly one candidate → return it.
+    5. If multiple candidates, try an exact ``compute_name_path`` match.
+       If still ambiguous → raise ``SymbolResolutionError`` with candidate list.
+    6. If zero candidates → raise ``SymbolResolutionError``.
+
+    :param ls: a started ``SolidLanguageServer`` instance.
+    :param name_path: the name_path pattern to search for.
+    :param relative_path: optional file or directory to scope the search.
+    :raises SymbolResolutionError: on ambiguity or no match.
     """
-    matches: list[UnifiedSymbolInformation] = []
-    for sym in symbols:
-        if matcher.matches(compute_name_path(sym)):
-            matches.append(sym)
-    if len(matches) > 1:
-        raise ValueError(
-            f"Multiple symbols match name path '{matcher.query}'"
+    from solidlsp.ls_types import SymbolKind  # noqa: F811
+
+    tree = ls.request_full_symbol_tree(within_relative_path=relative_path)
+
+    # Flatten the tree, skipping File and Package nodes in the result set
+    # (they always match too broadly and are never what callers want to resolve).
+    candidates: dict[str, list[UnifiedSymbolInformation]] = {}
+    matcher = NamePathMatcher(name_path)
+
+    def _collect(symbol: UnifiedSymbolInformation) -> None:
+        kind = symbol.get("kind")
+        if kind is not None and kind in (SymbolKind.File, SymbolKind.Package):
+            for child in symbol.get("children", []):
+                _collect(child)
+            return
+
+        computed = compute_name_path(symbol)
+        if matcher.matches(computed):
+            candidates.setdefault(computed, []).append(symbol)
+
+        for child in symbol.get("children", []):
+            _collect(child)
+
+    for root in tree:
+        _collect(root)
+
+    all_candidates: list[UnifiedSymbolInformation] = []
+    for lst in candidates.values():
+        all_candidates.extend(lst)
+
+    if len(all_candidates) == 1:
+        return all_candidates[0]
+
+    if len(all_candidates) > 1:
+        # Try exact match to break the tie.
+        # Strip leading "/" from pattern for comparison (name_paths never have it).
+        normalized_pattern = name_path[1:] if name_path.startswith("/") else name_path
+        exact_matches = [s for s in all_candidates if compute_name_path(s) == normalized_pattern]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+
+        # Build a human-readable candidate list
+        candidate_list: list[dict[str, object]] = []
+        for s in all_candidates:
+            location = s.get("location") or {}
+            candidate_list.append({
+                "name_path": compute_name_path(s),
+                "kind": s.get("kind"),
+                "location": (
+                    f"{location.get('relativePath', '')}:"
+                    f"{location.get('range', {}).get('start', {}).get('line', 0)}-"
+                    f"{location.get('range', {}).get('end', {}).get('line', 0)}"
+                ),
+            })
+
+        raise SymbolResolutionError(
+            name_path,
+            f"Ambiguous name_path — {len(all_candidates)} matches. Refine via find_symbol first.",
+            candidates=candidate_list,
         )
-    return matches[0] if matches else None
+
+    raise SymbolResolutionError(
+        name_path,
+        "No symbol matches this name_path in the project.",
+    )
