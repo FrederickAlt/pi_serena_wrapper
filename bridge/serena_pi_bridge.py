@@ -606,9 +606,11 @@ class Bridge:
         if "\n" in snippet:
             cmd.append("--multiline")
         cmd.extend(["-e", snippet])
-        # Scope path
+        # Scope path — default to cwd to avoid runaway searches
         if within_path is not None:
             cmd.append(within_path)
+        else:
+            cmd.append(".")
 
         try:
             proc = subprocess.run(
@@ -616,7 +618,7 @@ class Bridge:
                 cwd=self.cwd,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=10,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             raise RuntimeError(f"rg command failed: {exc}") from exc
