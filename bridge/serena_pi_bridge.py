@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import traceback
+import urllib.parse
 from pathlib import Path
 
 # Ensure the vendored solidlsp (sibling directory) is importable.
@@ -22,7 +23,10 @@ import yaml
 
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import Language, LanguageServerConfig
+from solidlsp.ls_utils import PathUtils
 from solidlsp.settings import SolidLSPSettings
+
+from name_path import resolve_unique_symbol, SymbolResolutionError
 
 PACKAGE_ROOT = _BRIDGE_DIR.parent
 SERENA_HOME = PACKAGE_ROOT / ".serena-data"
@@ -85,6 +89,93 @@ class Bridge:
             self.ls = None
         self.cwd = None
         return "OK"
+
+    def call_tool(self, tool: str, args: dict[str, object]) -> object:
+        """Dispatch a tool call to the appropriate handler."""
+        if self.ls is None:
+            raise RuntimeError("Bridge has not been initialized. Call init first.")
+
+        if tool == "rename_symbol":
+            return self.rename_symbol(**args)  # type: ignore[arg-type]
+        else:
+            raise ValueError(f"Unknown tool: {tool}")
+
+    # -- tools -------------------------------------------------------------
+
+    def rename_symbol(
+        self,
+        name_path: str,
+        new_name: str,
+        relative_path: str | None = None,
+    ) -> str:
+        """Rename a symbol throughout the project using direct SolidLSP.
+
+        Uses ``resolve_unique_symbol`` to find the symbol, then calls
+        ``request_rename_symbol_edit`` to compute the workspace edit.
+        Applies the edit to all affected files.
+        """
+        if self.ls is None:
+            raise RuntimeError("Bridge has not been initialized. Call init first.")
+
+        try:
+            symbol = resolve_unique_symbol(self.ls, name_path, relative_path)
+        except SymbolResolutionError as exc:
+            candidates_json = json.dumps(exc.candidates, ensure_ascii=False, default=str)
+            return f"Error: {exc} Candidates: {candidates_json}"
+
+        # Extract position: prefer selectionRange, fall back to range
+        sel_range = symbol.get("selectionRange") or symbol.get("range")
+        if sel_range is None:
+            return f"Error: symbol {name_path!r} has no position information"
+        start = sel_range.get("start")
+        if start is None:
+            return f"Error: symbol {name_path!r} has no start position"
+        line = start.get("line")  # type: ignore[assignment]
+        character = start.get("character")  # type: ignore[assignment]
+        if line is None or character is None:
+            return f"Error: symbol {name_path!r} has invalid position"
+
+        # Get file path from the symbol's location
+        location = symbol.get("location") or {}
+        relative_file_path = location.get("relativePath")
+        if not relative_file_path or not isinstance(relative_file_path, str):
+            return f"Error: symbol {name_path!r} has no relative file path"
+
+        # Request the workspace edit from the LSP
+        workspace_edit = self.ls.request_rename_symbol_edit(
+            relative_file_path, int(line), int(character), new_name
+        )
+
+        if workspace_edit is None:
+            return "Error: rename not supported by this language server"
+
+        # Apply the workspace edit to each changed file
+        changes = workspace_edit.get("changes") or {}
+        for uri, edits in changes.items():
+            # Convert URI to absolute path, then to relative path
+            try:
+                abs_path = PathUtils.uri_to_path(uri)
+            except Exception:
+                # Fallback: parse the URI manually
+                parsed = urllib.parse.urlparse(uri)
+                abs_path = urllib.parse.unquote(parsed.path)
+            try:
+                target_relative = os.path.relpath(abs_path, self.ls.repository_root_path)
+            except ValueError:
+                # On Windows, paths might be on different drives
+                target_relative = abs_path
+
+            # Open the file buffer, apply edits, then persist to disk
+            with self.ls.open_file(target_relative) as file_buffer:
+                # apply_text_edits_to_file opens the file again internally,
+                # but that just bumps the refcount. The buffer will still be
+                # alive when we read its contents below.
+                self.ls.apply_text_edits_to_file(target_relative, edits)
+                # Now read the modified contents and write to disk
+                abs_file_path = Path(self.ls.repository_root_path) / target_relative
+                abs_file_path.write_text(file_buffer.contents, encoding="utf-8")
+
+        return f"renamed {name_path} to {new_name}"
 
     # -- helpers ------------------------------------------------------------
 
@@ -161,6 +252,8 @@ def main() -> int:
                 result = bridge.shutdown()
                 respond(request_id, True, result)
                 return 0
+            elif method == "call_tool":
+                result = bridge.call_tool(str(request["tool"]), dict(request.get("args") or {}))
             else:
                 raise ValueError(f"Unknown method: {method}")
 
