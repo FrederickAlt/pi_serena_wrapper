@@ -8,6 +8,7 @@ Issue #5 — get_type tool.
 Issue #6 — get_references tool.
 Issue #7 — get_implementations tool.
 Issue #8 — get_docstring tool.
+Issue #9 — rename_symbol tool.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import re
 import subprocess
 import sys
 import traceback
+import urllib.parse
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterator
@@ -34,6 +36,7 @@ from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.ls_types import SymbolKind, UnifiedSymbolInformation
 from solidlsp.lsp_protocol_handler.server import LSPError
 from solidlsp.settings import SolidLSPSettings
+from solidlsp.ls_utils import PathUtils
 
 from name_path import (
     compute_name_path,
@@ -132,6 +135,8 @@ class Bridge:
             return self._get_implementations(params)
         elif tool_name == "get_docstring":
             return self._get_docstring(params)
+        elif tool_name == "rename_symbol":
+            return self._rename_symbol(params)
         else:
             raise ValueError(f"Tool not implemented: {tool_name}")
         self._validate_params(tool_name, params, tool_contract)
@@ -493,6 +498,70 @@ class Bridge:
             return "\n".join(parts)
 
         return ""
+
+    # -- rename_symbol tool --------------------------------------------------
+
+    def _rename_symbol(self, params: dict[str, object]) -> str:
+        """Rename a symbol throughout the project using direct SolidLSP."""
+        name_path = str(params["name_path"])
+        new_name = str(params["new_name"])
+        relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
+
+        assert self.ls is not None
+        try:
+            symbol = resolve_unique_symbol(self.ls, name_path, relative_path)  # type: ignore[arg-type]
+        except SymbolResolutionError as exc:
+            candidates_json = json.dumps(exc.candidates, ensure_ascii=False, default=str)
+            return f"Error: {exc} Candidates: {candidates_json}"
+
+        # Extract position: prefer selectionRange, fall back to range
+        sel_range = symbol.get("selectionRange") or symbol.get("range")
+        if sel_range is None:
+            return f"Error: symbol {name_path!r} has no position information"
+        start = sel_range.get("start")
+        if start is None:
+            return f"Error: symbol {name_path!r} has no start position"
+        line = start.get("line")
+        character = start.get("character")
+        if line is None or character is None:
+            return f"Error: symbol {name_path!r} has invalid position"
+
+        # Get file path from the symbol's location
+        location = symbol.get("location") or {}
+        relative_file_path = location.get("relativePath")
+        if not relative_file_path or not isinstance(relative_file_path, str):
+            return f"Error: symbol {name_path!r} has no relative file path"
+
+        # Request the workspace edit from the LSP
+        workspace_edit = self.ls.request_rename_symbol_edit(
+            relative_file_path, int(line), int(character), new_name
+        )
+
+        if workspace_edit is None:
+            return "Error: rename not supported by this language server"
+
+        # Apply the workspace edit to each changed file
+        changes = workspace_edit.get("changes") or {}
+        for uri, edits in changes.items():
+            # Convert URI to absolute path, then to relative path
+            try:
+                abs_path = PathUtils.uri_to_path(uri)
+            except Exception:
+                # Fallback: parse the URI manually
+                parsed = urllib.parse.urlparse(uri)
+                abs_path = urllib.parse.unquote(parsed.path)
+            try:
+                target_relative = os.path.relpath(abs_path, self.ls.repository_root_path)
+            except ValueError:
+                target_relative = abs_path
+
+            # Open the file buffer, apply edits, then persist to disk
+            with self.ls.open_file(target_relative) as file_buffer:
+                self.ls.apply_text_edits_to_file(target_relative, edits)
+                abs_file_path = Path(self.ls.repository_root_path) / target_relative
+                abs_file_path.write_text(file_buffer.contents, encoding="utf-8")
+
+        return f"renamed {name_path} to {new_name}"
 
     # -- helpers ------------------------------------------------------------
 

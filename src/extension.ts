@@ -160,6 +160,27 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // -- rename_symbol -------------------------------------------------------
+
+  pi.registerTool({
+    name: "rename_symbol" satisfies SerenaToolName,
+    label: "Rename Symbol",
+    description: toolDescriptions.rename_symbol,
+    parameters: toolSchemas.rename_symbol,
+    promptGuidelines: [
+      "Use rename_symbol to rename a symbol across the entire project via LSP.",
+      "Provide the name_path of the symbol to rename, the new_name, and optionally a relative_path to scope the search.",
+      "The rename is applied immediately — all affected files are modified on disk.",
+    ],
+    async execute(_toolCallId, params, signal) {
+      const bridge = clientFor();
+      const text = await bridge.callTool("rename_symbol", params as Record<string, unknown>, signal) as string;
+      return {
+        content: [{ type: "text" as const, text }],
+      };
+    },
+  });
+
   pi.on("session_shutdown", async (_event, _ctx) => {
     if (client) {
       await client.shutdown();
