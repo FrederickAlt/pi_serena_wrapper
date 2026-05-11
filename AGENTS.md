@@ -42,10 +42,7 @@ pi-serena-lsp/
 
 ```
 pi harness (Node/TS)  ──JSONL over stdin/stdout──►  serena_pi_bridge.py (Python)
-                                                           │
-                                                           ▼
-                                                     SolidLanguageServer (vendored SolidLSP)
-```
+ `
 
 - **`src/extension.ts`** — Loaded by pi at startup. Calls `pi.registerTool()` for each of the 7 tool names. Maintains one `SerenaBridgeClient` instance; on `session_shutdown` it kills the Python process.
 - **`src/bridge-client.ts`** — Spawns `bridge/serena_pi_bridge.py` via the local `.venv` Python. Sends `init`, `call_tool`, `shutdown` commands. Ensures the Python venv is set up before starting. Tracks the current `cwd` so switching projects re-inits the language server.
@@ -169,6 +166,12 @@ Ambiguous `name_path` resolutions print a candidate list to stderr with suggeste
 1. **Ambiguity errors.** When `resolve_unique_symbol` finds multiple matches for a `name_path`, the bridge returns a `SymbolResolutionError` with a `candidates` list. The TypeScript extension catches these and returns `{error, candidates}` so the agent can refine via `find_symbol` first.
 
 2. **Python environment is package-local.** The bridge uses `.venv/bin/python` — never the system Python. This avoids dependency conflicts with the user's project.
+
+---
+
+## Conventions
+
+- line-numbers start at 1
 
 ---
 

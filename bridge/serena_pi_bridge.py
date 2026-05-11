@@ -301,12 +301,7 @@ class Bridge:
         matcher = NamePathMatcher(name_path_str)
 
         # 1. Determine which language servers to query
-        if relative_path is not None:
-            # Per-file dispatch: use the LS for this file's extension
-            ls_instances = [self._ls_for_file(relative_path)]
-        else:
-            # Project-wide: iterate all configured language servers
-            ls_instances = list(self._ls_map.values())
+        ls_instances = self._ls_list_for(relative_path)
 
         # 2. Get symbol trees from all relevant LS instances
         matched: list[UnifiedSymbolInformation] = []
@@ -798,7 +793,7 @@ class Bridge:
 
         lines: list[str] = []
         for module, name_pairs in sorted(by_module.items()):
-            seen: set[str] = set()
+            seen: set[tuple[str, str]] = set()
             display_names: list[str] = []
             for original, binding in name_pairs:
                 key = (original, binding)
@@ -810,8 +805,13 @@ class Bridge:
                 else:
                     display_names.append(f"{original} (as {binding})")
             names_str = ", ".join(display_names)
-            # Use original names for workspace resolution
-            original_names = [orig for orig, _ in name_pairs]
+            # Use original names for workspace resolution (deduplicated)
+            seen_orig: set[str] = set()
+            original_names: list[str] = []
+            for orig, _ in name_pairs:
+                if orig not in seen_orig:
+                    seen_orig.add(orig)
+                    original_names.append(orig)
             classification = self._classify_import(module, original_names, file_relative_path, ls)
             lines.append(f"{module} — {names_str} {classification}")
 
@@ -908,11 +908,19 @@ class Bridge:
         if not ranges:
             return None
 
-        # Build location string: file:range&range&...
-        # All resolved names should be in the same file (same module).
-        base_path = ranges[0][0]
-        range_strs = [f"{s}-{e}" for _, s, e in ranges]
-        return f"{base_path}:{'&'.join(range_strs)}"
+        # Build location string.
+        # When all names resolve to the same file:  file:range&range&...
+        # When names resolve to different files (e.g. re-exports):  file:range; file:range
+        unique_files = list(dict.fromkeys(p for p, _, _ in ranges))
+        if len(unique_files) == 1:
+            base_path = unique_files[0]
+            range_strs = [f"{s}-{e}" for _, s, e in ranges]
+            return f"{base_path}:{'&'.join(range_strs)}"
+        else:
+            parts: list[str] = []
+            for p, s, e in ranges:
+                parts.append(f"{p}:{s}-{e}")
+            return "; ".join(parts)
 
     @staticmethod
     def _verify_module_file_match(location: str, module: str) -> bool:
@@ -920,42 +928,53 @@ class Bridge:
         imported *module* rather than being an unrelated internal name
         collision.
 
-        *location* is ``"rel/path:start-end&start-end..."`` as returned by
+        *location* is a string of the form ``"rel/path:start-end&start-end..."``
+        (single-file) or ``"rel/path1:r1; rel/path2:r2"`` (multi-file, when
+        names resolve to different files due to re-exports) as returned by
         :meth:`_resolve_import_location`.
         *module* is the source module specifier from the import statement
         (e.g. ``"tree_sitter"``, ``"solidlsp.ls_config"``).
 
-        The verification strips the file extension from the resolved path
+        The verification strips the file extension from each resolved path
         and compares it against the module path (dots replaced with ``/``).
         A match requires the stripped path to *end with* the module path,
-        or the module path + ``/__init__`` / ``/index``.
+        or the module path + ``/__init__`` / ``/index``, or to contain the
+        module path as a directory component (for vendored submodules).
+        When the location spans multiple files (``; `` separator), **any**
+        matching file is sufficient for the import to be classified as
+        internal.
         """
-        # Extract the file path from the location string
-        resolved_file = location.split(":")[0] if ":" in location else location
-        if not resolved_file:
+        # Extract all file paths from the location string.
+        # Single-file format:  "rel/path:start-end&start-end..."
+        # Multi-file format:   "rel/path1:r1; rel/path2:r2"
+        resolved_files: list[str] = []
+        for part in location.split("; "):
+            fpath = part.split(":")[0] if ":" in part else part
+            if fpath:
+                resolved_files.append(fpath)
+        if not resolved_files:
             return False
 
         module_path = module.replace(".", "/")
-        normalized = resolved_file.replace("\\", "/")
 
-        # Strip file extension to get a module-like path
-        stem = normalized
-        for ext in (".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cts", ".cjs"):
-            if stem.endswith(ext):
-                stem = stem[: -len(ext)]
-                break
+        def _path_matches_module(fpath: str) -> bool:
+            normalized = fpath.replace("\\", "/")
+            stem = normalized
+            for ext in (".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cts", ".cjs"):
+                if stem.endswith(ext):
+                    stem = stem[: -len(ext)]
+                    break
+            return (
+                stem == module_path
+                or stem.endswith(f"/{module_path}")
+                or f"/{module_path}/" in stem
+                or stem == f"{module_path}/__init__"
+                or stem.endswith(f"/{module_path}/__init__")
+                or stem == f"{module_path}/index"
+                or stem.endswith(f"/{module_path}/index")
+            )
 
-        # Match: stem is the module path, or stem ends with /module_path
-        # (handles subdirectory prefixes like "bridge/solidlsp"),
-        # or stem is module_path/__init__ or module_path/index.
-        return (
-            stem == module_path
-            or stem.endswith(f"/{module_path}")
-            or stem == f"{module_path}/__init__"
-            or stem.endswith(f"/{module_path}/__init__")
-            or stem == f"{module_path}/index"
-            or stem.endswith(f"/{module_path}/index")
-        )
+        return any(_path_matches_module(f) for f in resolved_files)
 
     @staticmethod
     def _filter_imported_symbols(
@@ -1333,11 +1352,18 @@ class Bridge:
     def _ls_list_for(self, relative_path: str | None) -> list[SolidLanguageServer]:
         """Return the appropriate LS instances to search.
 
-        When *relative_path* is given (scoped to a file or directory), returns
-        a single-element list with the LS for that file's language.  When
-        omitted (project-wide search), returns all configured LS instances.
+        When *relative_path* is a file, returns a single-element list with
+        the LS for that file's language.  When *relative_path* is a directory
+        or omitted (project-wide search), returns all configured LS instances
+        so that symbols from every language in the scope are visible.
         """
         if relative_path is not None:
+            # If relative_path points to a directory on disk, we cannot
+            # determine which language(s) apply → return all LS instances.
+            if self.cwd is not None:
+                abs_path = Path(self.cwd) / relative_path
+                if abs_path.is_dir():
+                    return list(self._ls_map.values())
             return [self._ls_for_file(relative_path)]
         return list(self._ls_map.values())
 

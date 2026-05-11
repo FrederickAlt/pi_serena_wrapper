@@ -264,6 +264,45 @@ class TestResolveUniqueSymbol:
         assert exc_info.value.candidates
         assert len(exc_info.value.candidates) == 2
 
+    # -- candidate location line numbers must be 1-based (Bug 1) --
+
+    def test_disambiguation_candidates_use_one_based_lines(self):
+        """Candidate locations from ambiguity errors must use 1-based line numbers.
+
+        LSP line numbers are 0-based internally, but all user-facing location
+        strings must be 1-based for consistency with every other tool output.
+        """
+        file1 = _make_symbol("transport", kind=SymbolKind.File)
+        send1 = _make_symbol("send", kind=SymbolKind.Function, parent=file1,
+                             location={"relativePath": "src/transport.ts",
+                                        "range": {"start": {"line": 41, "character": 0},
+                                                  "end": {"line": 46, "character": 0}}})
+        file1["children"] = [send1]
+
+        file2 = _make_symbol("main", kind=SymbolKind.File)
+        send2 = _make_symbol("send", kind=SymbolKind.Function, parent=file2,
+                             location={"relativePath": "src/main.ts",
+                                        "range": {"start": {"line": 131, "character": 0},
+                                                  "end": {"line": 175, "character": 0}}})
+        file2["children"] = [send2]
+
+        tree = [file1, file2]
+        ls = self._make_ls_mock(tree)
+        with pytest.raises(SymbolResolutionError) as exc_info:
+            resolve_unique_symbol(ls, "send")  # type: ignore[arg-type]
+
+        candidates = exc_info.value.candidates
+        assert len(candidates) == 2
+
+        # The location strings should use 1-based line numbers (raw + 1)
+        locs = [c["location"] for c in candidates]
+        # src/transport.ts raw lines 41-46 → 1-based should be 42-47
+        assert "src/transport.ts:42-47" in locs, \
+            f"Expected 1-based 42-47 in candidates, got: {locs}"
+        # src/main.ts raw lines 131-175 → 1-based should be 132-176
+        assert "src/main.ts:132-176" in locs, \
+            f"Expected 1-based 132-176 in candidates, got: {locs}"
+
     # -- zero matches --
 
     def test_zero_matches_raises_error(self):

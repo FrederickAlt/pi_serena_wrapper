@@ -169,8 +169,8 @@ def _disambiguate(
                 "kind": SymbolKind(s.get("kind")).name,
                 "location": (
                     f"{location.get('relativePath', '')}:"
-                    f"{location.get('range', {}).get('start', {}).get('line', 0)}-"
-                    f"{location.get('range', {}).get('end', {}).get('line', 0)}"
+                    f"{location.get('range', {}).get('start', {}).get('line', 0) + 1}-"
+                    f"{location.get('range', {}).get('end', {}).get('line', 0) + 1}"
                 ),
             })
 

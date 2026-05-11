@@ -94,7 +94,7 @@ export default function (pi: ExtensionAPI) {
       "Use this tool when you need to identify the type of a symbol (interface, class, type alias, enum, etc.).",
       "Provide an exact name_path (e.g. \"MyInterface\" or \"MyClass/myMethod\"). See the name_path documentation for details on pattern matching.",
       "If the result is ambiguous, you'll receive a list of candidates. Use find_symbol first to narrow down the possibilities.",
-      "relative_path is optional — provide it to scope the search to a specific file or directory.",
+      "relative_path is optional — provide it to narrow which file/directory to search for the symbol definition. The resolved type info is always project-wide.",
       "The result is a compact symbol dict with name_path, kind, and location.",
     ],
     execute: async (_toolCallId, params, signal) => {
@@ -114,7 +114,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "Use get_references to find all usages of a symbol across the codebase.",
       "Provide the full Serena name_path (e.g. MyClass/myMethod) to identify the symbol.",
-      "Optionally scope the search with relative_path to limit results to a file or directory.",
+      "Optionally scope the search with relative_path to narrow which file/directory to search for the symbol definition. Reference results are always project-wide.",
       "Each result includes referrer (enclosing scope), kind, and location (file:startLine-endLine).",
     ],
     execute: async (_toolCallId, params, signal) => {
@@ -133,7 +133,7 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchemas.get_implementations,
     promptGuidelines: [
       "Use `get_implementations` to find implementing symbols for a given interface/abstract method via Serena's LSP.",
-      "Provide `name_path` (required) to identify the symbol. Optionally pass `relative_path` to scope the search.",
+      "Provide `name_path` (required) to identify the symbol. Optionally pass `relative_path` to narrow which file/directory to search for the symbol definition. Implementation results are always project-wide.",
     ],
     execute: async (_toolCallId, params, signal) => {
       return wrapAmbiguity(() =>
@@ -151,7 +151,7 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchemas.get_docstring,
     promptGuidelines: [
       "Use get_docstring to retrieve documentation/hover text for a symbol.",
-      "Provide the name_path to identify the symbol. Optionally scope with relative_path.",
+      "Provide the name_path to identify the symbol. Optionally scope with relative_path to narrow where to search for the symbol definition.",
       "Returns a plain string with the hover content, or 'No docstring available.'.",
     ],
     execute: async (_toolCallId, params, signal) => {
@@ -170,8 +170,8 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchemas.rename_symbol,
     promptGuidelines: [
       "Use rename_symbol to rename a symbol across the entire project via LSP.",
-      "Provide the name_path of the symbol to rename, the new_name, and optionally a relative_path to scope the search.",
-      "The rename is applied immediately — all affected files are modified on disk.",
+      "Provide the name_path of the symbol to rename, the new_name, and optionally a relative_path to narrow which file/directory to search for the symbol definition.",
+      "The rename applies only the edits returned by the language server; some servers may not propagate renames to import sites in other files.",
     ],
     execute: async (_toolCallId, params, signal) => {
       return wrapAmbiguity(() =>

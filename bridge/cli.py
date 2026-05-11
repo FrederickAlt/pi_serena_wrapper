@@ -142,7 +142,7 @@ def args_to_params(args: argparse.Namespace) -> dict[str, object]:
         # argparse sets unset optional args to None — strip them so the
         # bridge's validation doesn't choke on unexpected nulls.
         if value is not None:
-            params[key.replace("_", "_")] = value
+            params[key] = value
     return params
 
 

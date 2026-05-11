@@ -88,7 +88,7 @@ def _walk_python(node: object, pairs: list[tuple[str, str, str]]) -> None:
 
     if ntype == "import_statement":
         _handle_py_import_statement(node, pairs)
-    elif ntype == "import_from_statement":
+    elif ntype in ("import_from_statement", "future_import_statement"):
         _handle_py_import_from_statement(node, pairs)
 
     try:
