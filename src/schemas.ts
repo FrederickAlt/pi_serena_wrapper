@@ -94,6 +94,10 @@ export const toolSchemas = {
     relative_path: Type.Optional(RelativePath),
   }),
 
+  restart_lsp: Type.Object({
+    cwd: Type.String({ description: "Project root directory. The LSP re-initializes for this project." }),
+  }),
+
   get_document_overview: Type.Object({
     relative_path: RelativePath,
     depth: Type.Optional(Type.Number({ description: "Descendant nesting depth for the symbols tree. Default 0 (top-level only)." })),

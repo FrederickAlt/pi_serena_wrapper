@@ -25,6 +25,8 @@ pi-serena-lsp/
 │   ├── name_path.py            # Symbol name_path computation, matching, resolution
 │   ├── import_parser.py        # Tree-sitter import extraction (used by get_document_overview)
 │   ├── test_name_path.py       # Unit tests for name_path logic
+│   ├── test_bridge.py          # Unit tests for LS dispatch logic
+│   ├── test_bridge_helpers.py  # Unit tests for Bridge pure helpers
 │   └── solidlsp/               # Vendored SolidLSP (MIT) — the LSP backend
 ├── scripts/
 │   └── jsonl-regression.ts     # Regression test — exercises every tool against TS/Python fixtures
@@ -103,10 +105,17 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 npm run typecheck
 # or: npx tsc -p tsconfig.json --noEmit
 
-# Full regression test (typechecks + JSONL bridge test)
+# Full test suite (typecheck + Python unit tests + JSONL regression)
 npm test
 
-# Run regression test alone
+# Python unit tests only (fast — ~0.3s, no LSP startup)
+npm run test:python
+# or: .venv/bin/python -m pytest bridge/ -v
+
+# TypeScript type-check only
+npm run typecheck
+
+# JSONL regression test only (slow — starts real language servers)
 npm run test:jsonl
 # or: node --import @mariozechner/jiti/register scripts/jsonl-regression.ts
 

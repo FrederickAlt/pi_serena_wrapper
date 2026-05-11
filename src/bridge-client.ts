@@ -100,6 +100,13 @@ export class SerenaBridgeClient {
     await this.transport.shutdown();
   }
 
+  async restart(cwd: string): Promise<unknown> {
+    if (this.transport.isAlive()) {
+      await this.shutdown();
+    }
+    return await this.init(cwd);
+  }
+
   async callTool(toolName: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (!this.transport.isAlive()) {
       throw new Error("Serena bridge is not running. Call init() first.");

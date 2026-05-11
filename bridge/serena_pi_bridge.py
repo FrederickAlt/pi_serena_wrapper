@@ -49,6 +49,8 @@ from name_path import (
 
 from import_parser import parse_imports
 
+import formatting
+
 PACKAGE_ROOT = _BRIDGE_DIR.parent
 
 # ---------------------------------------------------------------------------
@@ -295,7 +297,7 @@ class Bridge:
         kinds: list[int] | None = None
         raw_kinds = params.get("kinds")
         if raw_kinds is not None and isinstance(raw_kinds, list):
-            kinds = list(Bridge._parse_kinds(raw_kinds))  # type: ignore[arg-type]
+            kinds = list(formatting.parse_kinds(raw_kinds))  # type: ignore[arg-type]
         max_matches = int(params.get("max_matches", 10))
 
         matcher = NamePathMatcher(name_path_str)
@@ -309,7 +311,7 @@ class Bridge:
             tree = ls.request_full_symbol_tree(
                 within_relative_path=relative_path if relative_path else None
             )
-            flat_symbols = list(self._flatten_tree(tree))
+            flat_symbols = list(formatting.flatten_tree(tree))
             for sym in flat_symbols:
                 # Apply exclude_dot_paths filtering
                 if self.exclude_dot_paths:
@@ -344,7 +346,7 @@ class Bridge:
         for sym in matched:
             np = compute_name_path(sym)
             kind_name = SymbolKind(sym["kind"]).name
-            loc_str = self._format_location(sym)
+            loc_str = formatting.format_location(sym)
             result_symbols.append({
                 "name_path": np,
                 "kind": kind_name,
@@ -576,7 +578,7 @@ class Bridge:
         # Use the LS appropriate for the resolved symbol's file
         doc_ls = self._ls_for_file(file_path)
         hover = doc_ls.request_hover(file_path, line, column)
-        text = self._extract_hover_text(hover)
+        text = formatting.extract_hover_text(hover)
         return text if text else "No docstring available."
 
     @staticmethod
@@ -733,7 +735,7 @@ class Bridge:
         # Parse kinds — default from config (or tool param override)
         raw_kinds = params.get("kinds")
         if raw_kinds is not None and isinstance(raw_kinds, list):
-            included_kinds = Bridge._parse_kinds(raw_kinds)
+            included_kinds = formatting.parse_kinds(raw_kinds)
         else:
             included_kinds = set(self._overview_kinds)
 
@@ -763,12 +765,12 @@ class Bridge:
         # Get document symbols and filter out imported names
         doc_symbols = ls.request_document_symbols(relative_path)
         imported_names: set[str] = {binding for _, binding, _ in import_pairs}
-        filtered_root_symbols = self._filter_imported_symbols(
+        filtered_root_symbols = formatting.filter_imported_symbols(
             doc_symbols.root_symbols, imported_names
         )
 
         # Format symbols with line ranges, depth, and kind filter
-        symbols_text = self._format_overview_symbols(
+        symbols_text = formatting.format_overview_symbols(
             filtered_root_symbols, depth, 0, included_kinds
         )
         sections.append("## Symbols")

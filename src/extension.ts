@@ -161,6 +161,22 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // -- restart_lsp ---------------------------------------------------------
+
+  pi.registerTool({
+    name: "restart_lsp" satisfies SerenaToolName,
+    label: "Restart LSP",
+    description: toolDescriptions.restart_lsp,
+    parameters: toolSchemas.restart_lsp,
+    execute: async (_toolCallId, params) => {
+      const result = await clientFor().restart(params.cwd as string);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+        details: result,
+      };
+    },
+  });
+
   // -- rename_symbol -------------------------------------------------------
 
   pi.registerTool({

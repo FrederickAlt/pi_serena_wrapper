@@ -1456,6 +1456,46 @@ async function testBug2ImportConsistency(): Promise<void> {
   await client.shutdown();
 }
 
+// -- restart_lsp (Issue #29) -----------------------------------------------
+
+async function testRestartLsp(): Promise<void> {
+  await writeRichTypeScriptFixture();
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - typescript\n",
+  );
+  const initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
+  console.log(`Init OK: language=${initResult.language}`);
+
+  await new Promise(r => setTimeout(r, 3000));
+
+  // 1. Confirm tools work before restart
+  const before = await client.callTool("find_symbol", { name_path: "MyClass" }) as FindSymbolResult;
+  const symsBefore = stripSentinel(before);
+  const mc = findSymbol(symsBefore, "MyClass");
+  assert(mc !== undefined, "MyClass should be found before restart");
+  console.log(`find_symbol before restart OK: ${mc.name_path}`);
+
+  // 2. Restart
+  const restartResult = await client.restart(fixtureRoot) as Record<string, unknown>;
+  assert(restartResult.ok === true, `Restart should succeed: ${JSON.stringify(restartResult)}`);
+  assert(typeof restartResult.language === "string", `Should return language: ${JSON.stringify(restartResult)}`);
+  assert(typeof restartResult.cwd === "string", `Should return cwd: ${JSON.stringify(restartResult)}`);
+  console.log(`restart_lsp OK: language=${restartResult.language}, cwd=${restartResult.cwd}`);
+
+  await new Promise(r => setTimeout(r, 3000));
+
+  // 3. Confirm tools still work after restart
+  const after = await client.callTool("find_symbol", { name_path: "MyClass" }) as FindSymbolResult;
+  const symsAfter = stripSentinel(after);
+  const mcAfter = findSymbol(symsAfter, "MyClass");
+  assert(mcAfter !== undefined, "MyClass should be found after restart");
+  console.log(`find_symbol after restart OK: ${mcAfter.name_path}`);
+
+  await client.shutdown();
+}
+
 // -- main ------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -1502,6 +1542,9 @@ async function run(): Promise<void> {
 
   console.log("\n=== Bug 2+3: consistent import classification + file-path display ===");
   await testBug2ImportConsistency();
+
+  console.log("\n=== restart_lsp (Issue #29) ===");
+  await testRestartLsp();
 
   console.log(`\nPASS jsonl regression: ${fixtureRoot}`);
 }

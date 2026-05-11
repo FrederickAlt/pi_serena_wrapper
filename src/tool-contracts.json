@@ -128,6 +128,20 @@
         "additionalProperties": false
       }
     },
+    "restart_lsp": {
+      "description": "Restart the LSP language server processes for the current project. Kills all running language servers and re-initializes them fresh. Use when the LSP enters a bad state (stale index, crashed subprocess, resource exhaustion) or after editing .serenaproject.yml to pick up configuration changes.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "type": "string",
+            "description": "Project root directory. The LSP re-initializes for this project."
+          }
+        },
+        "required": ["cwd"],
+        "additionalProperties": false
+      }
+    },
     "get_document_overview": {
       "description": "Get a two-section plain-text overview of a source file: Imports (what the file consumes) and Symbols (what the file defines, each with body line ranges).",
       "params": {
