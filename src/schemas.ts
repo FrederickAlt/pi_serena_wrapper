@@ -46,14 +46,11 @@ const NamePath = Type.String({
   description: "Serena symbol name path for a named code entity in the symbol tree, for example MyClass/my_method or /MyClass/my_method.",
 });
 
-const KindList = Type.Optional(Type.Array(Type.Number(), {
-  description: "LSP SymbolKind integer values.",
+const KindList = Type.Optional(Type.Array(Type.Union([Type.Number(), Type.String()]), {
+  description: "LSP SymbolKind names (e.g. 'Class', 'Method', 'Function') or integer values.",
 }));
 
-const NamePathLookup = {
-  relative_path: RelativePath,
-  name_path: NamePath,
-} as const;
+
 
 // ---------------------------------------------------------------------------
 // Tool schemas — kept in TypeScript because TypeBox features (Type.Union,
@@ -92,7 +89,8 @@ export const toolSchemas = {
   }),
 
   rename_symbol: Type.Object({
-    ...NamePathLookup,
+    name_path: NamePath,
+    relative_path: Type.Optional(RelativePath),
     new_name: Type.String({ description: "New symbol name. The language server may reject rename if the workspace has errors." }),
   }),
 

@@ -420,10 +420,20 @@ async function run(): Promise<void> {
   console.log(`\nPASS jsonl regression: ${fixtureRoot}`);
 }
 
-run().catch(async (error) => {
-  console.error(`FAIL jsonl regression: ${error instanceof Error ? error.stack : error}`);
-  if (client) {
-    try { await client.shutdown(); } catch { /* ignore */ }
-  }
-  process.exitCode = 1;
-});
+run()
+  .then(async () => {
+    try {
+      await rm(fixtureRoot, { recursive: true, force: true });
+      console.log(`Cleaned up fixture: ${fixtureRoot}`);
+    } catch { /* ignore */ }
+  })
+  .catch(async (error) => {
+    console.error(`FAIL jsonl regression: ${error instanceof Error ? error.stack : error}`);
+    if (client) {
+      try { await client.shutdown(); } catch { /* ignore */ }
+    }
+    try {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    } catch { /* ignore */ }
+    process.exitCode = 1;
+  });

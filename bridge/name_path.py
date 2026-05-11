@@ -180,7 +180,7 @@ def resolve_unique_symbol(
             location = s.get("location") or {}
             candidate_list.append({
                 "name_path": compute_name_path(s),
-                "kind": s.get("kind"),
+                "kind": SymbolKind(s.get("kind")).name,
                 "location": (
                     f"{location.get('relativePath', '')}:"
                     f"{location.get('range', {}).get('start', {}).get('line', 0)}-"
@@ -258,6 +258,7 @@ def resolve_unique_symbol_via_workspace(
         )
 
     from solidlsp.ls_utils import PathUtils
+    from solidlsp.ls_types import SymbolKind  # noqa: F811
     from pathlib import Path
 
     matcher = NamePathMatcher(name_path)
@@ -325,7 +326,7 @@ def resolve_unique_symbol_via_workspace(
             loc = s.get("location") or {}
             candidate_list.append({
                 "name_path": compute_name_path(s),
-                "kind": s.get("kind"),
+                "kind": SymbolKind(s.get("kind")).name,
                 "location": (
                     f"{loc.get('relativePath', '')}:"
                     f"{loc.get('range', {}).get('start', {}).get('line', 0)}-"

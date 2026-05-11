@@ -58,8 +58,8 @@
           },
           "kinds": {
             "type": "array",
-            "items": { "type": "number" },
-            "description": "LSP SymbolKind integer values."
+            "items": { "type": ["number", "string"] },
+            "description": "LSP SymbolKind names (e.g. 'Class', 'Method', 'Function') or integer values."
           },
           "max_matches": {
             "type": "number",
@@ -124,7 +124,7 @@
             "description": "New symbol name. The language server may reject rename if the workspace has errors."
           }
         },
-        "required": ["relative_path", "name_path", "new_name"],
+        "required": ["name_path", "new_name"],
         "additionalProperties": false
       }
     },

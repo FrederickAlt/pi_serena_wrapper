@@ -29,6 +29,7 @@ _BRIDGE_DIR = Path(__file__).resolve().parent
 if str(_BRIDGE_DIR) not in sys.path:
     sys.path.insert(0, str(_BRIDGE_DIR))
 
+import jsonschema
 import yaml
 
 from solidlsp import SolidLanguageServer
@@ -47,9 +48,6 @@ from name_path import (
 )
 
 PACKAGE_ROOT = _BRIDGE_DIR.parent
-SERENA_HOME = PACKAGE_ROOT / ".serena-data"
-
-os.environ.setdefault("SERENA_HOME", str(SERENA_HOME))
 
 
 # ---------------------------------------------------------------------------
@@ -140,16 +138,6 @@ class Bridge:
             return self._rename_symbol(params)
         else:
             raise ValueError(f"Tool not implemented: {tool_name}")
-        self._validate_params(tool_name, params, tool_contract)
-
-        if tool_name == "find_symbol":
-            return self._find_symbol(params)
-        elif tool_name == "get_document_symbols":
-            return self._get_document_symbols(params)
-        elif tool_name == "get_type":
-            return self._get_type(params)
-        else:
-            raise ValueError(f"Tool not implemented: {tool_name}")
 
     def _load_tool_contracts(self) -> dict[str, dict[str, object]]:
         """Load tool-contracts.json (cached)."""
@@ -169,7 +157,7 @@ class Bridge:
         params: dict[str, object],
         contract: dict[str, object],
     ) -> None:
-        """Minimal validation: check required params are present."""
+        """Validate required params are present and types match the contract schema."""
         schema = contract.get("params")
         if not isinstance(schema, dict):
             return
@@ -179,6 +167,12 @@ class Bridge:
                 raise ValueError(
                     f"Tool '{tool_name}' requires parameter '{key}'"
                 )
+        try:
+            jsonschema.validate(instance=params, schema=schema)
+        except jsonschema.ValidationError as exc:
+            raise ValueError(
+                f"Invalid parameter for tool '{tool_name}': {exc.message}"
+            ) from exc
 
     # -- find_symbol tool --------------------------------------------------
 
@@ -195,7 +189,16 @@ class Bridge:
         kinds: list[int] | None = None
         raw_kinds = params.get("kinds")
         if raw_kinds is not None and isinstance(raw_kinds, list):
-            kinds = [int(k) for k in raw_kinds]
+            # Accept SymbolKind names (strings) and convert to integers for filtering.
+            kinds = []
+            for k in raw_kinds:
+                if isinstance(k, str):
+                    try:
+                        kinds.append(SymbolKind[k].value)
+                    except KeyError:
+                        raise ValueError(f"Unknown SymbolKind name: {k!r}")
+                else:
+                    kinds.append(int(k))
         max_matches = int(params.get("max_matches", 10))
 
         matcher = NamePathMatcher(name_path_str)

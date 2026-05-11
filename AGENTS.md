@@ -71,7 +71,6 @@ pi harness (Node/TS)  ──JSONL over stdin/stdout──►  serena_pi_bridge.p
 
 - **`.venv/`** — Package-local Python virtualenv with solidlsp dependencies (`sensai-utils`, `pathspec`, `jsonschema`, `pyyaml`). Created by `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
 - **`.solidlsp/`** — SolidLSP cache directory (language server installs). Created automatically by SolidLSP on first start.
-- **`.serena-data/`** — Legacy Serena home directory. No longer used; kept for backwards compat only.
 
 ---
 

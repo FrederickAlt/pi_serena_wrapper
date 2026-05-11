@@ -18,33 +18,39 @@
    Passed to all tools as an optional scoping parameter.
 
    Semantics: scopes the symbol search to files under that path. When omitted,
-   the search runs project-wide. The only exception is `get_document_symbols`,
-   which requires a relative_path because it operates on a single file.
+   the search runs project-wide. The only exception is `get_document_overview`
+   (and the deprecated `get_document_symbols`), which requires a relative_path
+   because it operates on a single file.
 
    The bridge canonicalises relative_path before passing it to the LSP:
    it converts to project-root-relative and checks the file exists on disk.
 
-## location
+## get_document_overview
 
-   A compact span string in the format `relative/path:startLine-endLine`
-   (e.g. `src/transport.ts:108-130`). Returned by every tool as an
-   informational coordinate. Not used for symbol identification — only
-   `name_path` is used for identification and resolution.
+   Replaces `get_document_symbols`. Returns a two-section plain-text overview of a
+   single file: `## Imports` (what the file consumes) and `## Symbols` (what the
+   file defines). Each symbol line includes its body line range:
+   `Class UserService:5-67`.
 
-## code_snippet
+   The imports section is extracted via tree-sitter parsing (not LSP) because
+   SolidLSP drops external definition locations. Imports are classified:
+     - **internal** — resolved to a definition location via LSP workspace symbol
+       search, shown as `[internal → path:lines]`
+     - **external** — standard library or package, shown as `[external]`
+     - When resolution fails, internal imports fall back to `[internal]` without
+       a location.
 
-   An exact source code string used by `find_symbol` to narrow results via
-   `rg --json`. Only symbols whose location falls within a snippet occurrence
-   are returned. When `relative_path` is also provided, `rg` is scoped to that
-   path; otherwise it searches the entire project.
+   The symbols section shows only locally-defined symbols (imported bindings are
+   excluded). Nesting depth is controlled by the `depth` parameter (0 = top-level
+   only).
 
-## tool-contracts.json
+   v1 supports TypeScript/TSX and Python import parsing. Other languages omit the
+   imports section.
 
-   The single source of truth for tool parameter schemas, located at
-   `src/tool-contracts.json`. Both `src/schemas.ts` (TypeBox) and
-   `bridge/serena_pi_bridge.py` (Python) derive their parameter definitions
-   from this file. When adding or changing a tool parameter, update this file
-   first, then sync the TypeScript and Python sides.
+## Flagged ambiguities
+
+- `get_document_symbols` is deprecated and replaced by `get_document_overview`.
+  It will be removed after a transition period.
 
 ## SolidLSP
 

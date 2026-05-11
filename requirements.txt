@@ -6,3 +6,6 @@ psutil
 charset-normalizer
 requests
 overrides
+tree-sitter
+tree-sitter-typescript
+tree-sitter-python

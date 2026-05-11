@@ -73,8 +73,6 @@ export class SerenaBridgeClient {
       cwd: this.root,
       env: {
         ...process.env,
-        SERENA_HOME: path.join(this.root, ".serena-data"),
-        SERENA_USAGE_REPORTING: "false",
       },
     });
     this.transport.setOnDeath(() => {

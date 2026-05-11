@@ -12,6 +12,29 @@ export default function (pi: ExtensionAPI) {
     return client;
   }
 
+  /** Return tool result, with structured error info on symbol ambiguity. */
+  async function wrapAmbiguity(call: () => Promise<unknown>): Promise<AgentToolResult<unknown>> {
+    try {
+      const result = await call();
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+        details: result,
+      };
+    } catch (err) {
+      if (err instanceof SerenaError && err.errorKind === "ambiguity") {
+        const errorResult = {
+          error: err.message,
+          candidates: err.errorData.candidates,
+        };
+        return {
+          content: [{ type: "text", text: JSON.stringify(errorResult) }],
+          details: errorResult,
+        };
+      }
+      throw err;
+    }
+  }
+
   // -- find_symbol --------------------------------------------------------
 
   pi.registerTool({
@@ -19,13 +42,10 @@ export default function (pi: ExtensionAPI) {
     label: "Find Symbol",
     description: toolDescriptions.find_symbol,
     parameters: toolSchemas.find_symbol,
-    async execute(_toolCallId, params, signal) {
-      const result = await clientFor().callTool("find_symbol", params as Record<string, unknown>, signal);
-      const text = JSON.stringify(result, null, 2);
-      return {
-        content: [{ type: "text" as const, text }],
-        details: result,
-      };
+    execute: async (_toolCallId, params, signal) => {
+      return wrapAmbiguity(() =>
+        clientFor().callTool("find_symbol", params as Record<string, unknown>, signal),
+      );
     },
   });
 
@@ -67,26 +87,9 @@ export default function (pi: ExtensionAPI) {
       "The result is a compact symbol dict with name_path, kind, and location.",
     ],
     execute: async (_toolCallId, params, signal) => {
-      const c = clientFor();
-      try {
-        const result = await c.callTool("get_type", params as Record<string, unknown>, signal);
-        return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-          details: result,
-        } satisfies AgentToolResult<unknown>;
-      } catch (err) {
-        if (err instanceof SerenaError && err.errorKind === "ambiguity") {
-          const errorResult = {
-            error: err.message,
-            candidates: err.errorData.candidates,
-          };
-          return {
-            content: [{ type: "text", text: JSON.stringify(errorResult) }],
-            details: errorResult,
-          } satisfies AgentToolResult<unknown>;
-        }
-        throw err;
-      }
+      return wrapAmbiguity(() =>
+        clientFor().callTool("get_type", params as Record<string, unknown>, signal),
+      );
     },
   });
 
@@ -103,13 +106,10 @@ export default function (pi: ExtensionAPI) {
       "Optionally scope the search with relative_path to limit results to a file or directory.",
       "Each result includes name_path, kind, and location (file:startLine-endLine).",
     ],
-    async execute(_toolCallId, params, signal) {
-      const bridge = clientFor();
-      const result = await bridge.callTool("get_references", params as Record<string, unknown>, signal);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-        details: result,
-      };
+    execute: async (_toolCallId, params, signal) => {
+      return wrapAmbiguity(() =>
+        clientFor().callTool("get_references", params as Record<string, unknown>, signal),
+      );
     },
   });
 
@@ -125,18 +125,9 @@ export default function (pi: ExtensionAPI) {
       "Provide `name_path` (required) to identify the symbol. Optionally pass `relative_path` to scope the search.",
     ],
     execute: async (_toolCallId, params, signal) => {
-      const c = clientFor();
-      const result = await c.callTool("get_implementations", params as Record<string, unknown>, signal);
-      if (result && typeof result === "object" && "error" in result) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${(result as Record<string, unknown>).error}` }],
-          details: {},
-        };
-      }
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-        details: {},
-      };
+      return wrapAmbiguity(() =>
+        clientFor().callTool("get_implementations", params as Record<string, unknown>, signal),
+      );
     },
   });
 
@@ -152,13 +143,10 @@ export default function (pi: ExtensionAPI) {
       "Provide the name_path to identify the symbol. Optionally scope with relative_path.",
       "Returns a plain string with the hover content, or 'No docstring available.'.",
     ],
-    async execute(_toolCallId, params, signal) {
-      const bridge = clientFor();
-      const text = await bridge.callTool("get_docstring", params as Record<string, unknown>, signal) as string;
-      return {
-        content: [{ type: "text" as const, text }],
-        details: {},
-      };
+    execute: async (_toolCallId, params, signal) => {
+      return wrapAmbiguity(() =>
+        clientFor().callTool("get_docstring", params as Record<string, unknown>, signal),
+      );
     },
   });
 
@@ -174,13 +162,10 @@ export default function (pi: ExtensionAPI) {
       "Provide the name_path of the symbol to rename, the new_name, and optionally a relative_path to scope the search.",
       "The rename is applied immediately — all affected files are modified on disk.",
     ],
-    async execute(_toolCallId, params, signal) {
-      const bridge = clientFor();
-      const text = await bridge.callTool("rename_symbol", params as Record<string, unknown>, signal) as string;
-      return {
-        content: [{ type: "text" as const, text }],
-        details: {},
-      };
+    execute: async (_toolCallId, params, signal) => {
+      return wrapAmbiguity(() =>
+        clientFor().callTool("rename_symbol", params as Record<string, unknown>, signal),
+      );
     },
   });
 
