@@ -7,7 +7,7 @@ Standalone pi package exposing a SolidLSP-backed symbolic LSP tool set.
 V1 exposes seven tools:
 
 - `find_symbol`
-- `get_document_symbols`
+- `get_document_overview`
 - `get_type`
 - `get_references`
 - `get_implementations`
@@ -45,6 +45,24 @@ pi -e /home/frederick/projects/AI/pi_extensions/lsp/pi-serena-lsp
 ```
 
 The bridge stores SolidLSP data under `.solidlsp/` in the package directory.
+
+## Multi-language configuration
+
+Configuring multiple languages in `.serenaproject.yml` starts one language server per language, which increases memory usage. For example, a project with both TypeScript and Python configured will run two language server processes (typically ~200-400 MB each).
+
+A language server is started lazily the first time a file of that language is accessed. To disable lazy loading and start all servers eagerly at init, explicitly list all needed languages in `.serenaproject.yml`.
+
+### `exclude_dot_paths`
+
+Set `exclude_dot_paths: false` in `.serenaproject.yml` to include symbols from dot-prefixed directories (`.venv`, `.git`, `.sandcastle`, etc.) in `find_symbol` and workspace symbol search results. Default is `true` (exclude).
+
+Example:
+```yaml
+languages:
+  - typescript
+  - python
+exclude_dot_paths: false
+```
 
 ## Regression Test
 

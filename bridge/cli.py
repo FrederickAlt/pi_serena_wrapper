@@ -92,15 +92,6 @@ Examples:
     overview.add_argument("--depth", type=int, default=0,
                           help="Descendant nesting depth for symbols. Default: 0.")
 
-    # -- get_document_symbols (deprecated, but exposed for completeness) ----
-
-    doc_syms = sub.add_parser("get_document_symbols",
-                              help="[DEPRECATED] Indented text tree of symbols in a file. Prefer get_document_overview.")
-    doc_syms.add_argument("--relative-path", required=True,
-                          help="Path to a source file, relative to project root.")
-    doc_syms.add_argument("--depth", type=int, default=0,
-                          help="Descendant depth. Default: 0.")
-
     # -- get_type -----------------------------------------------------------
 
     gtype = sub.add_parser("get_type", help="Resolve a name_path to its defining type.")

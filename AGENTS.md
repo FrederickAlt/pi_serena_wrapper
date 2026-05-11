@@ -2,7 +2,7 @@
 
 ## What this is
 
-A **pi extension** that exposes SolidLSP-backed symbolic LSP tools as pi tools. When the pi harness loads this extension, it registers 8 tools (`find_symbol`, `get_document_symbols`, `get_document_overview`, `get_type`, `get_references`, `get_implementations`, `get_docstring`, `rename_symbol`) that let an agent query the project's symbol index through a language server.
+A **pi extension** that exposes SolidLSP-backed symbolic LSP tools as pi tools. When the pi harness loads this extension, it registers 7 tools (`find_symbol`, `get_document_overview`, `get_type`, `get_references`, `get_implementations`, `get_docstring`, `rename_symbol`) that let an agent query the project's symbol index through a language server.
 
 The extension is a thin bridge between two runtimes: the pi agent (Node.js/TypeScript) and a vendored SolidLSP (Python). The Node side registers tools, manages per-project bridge clients, and sends JSON-RPC requests over stdin/stdout to a Python subprocess that wraps `SolidLanguageServer`.
 
@@ -15,7 +15,7 @@ A standalone CLI (`bridge/cli.py`) is also provided for **manual debugging only*
 ```
 pi-serena-lsp/
 ├── src/                        # TypeScript — pi extension
-│   ├── extension.ts            # Entry point: registers 8 tools, manages clients
+│   ├── extension.ts            # Entry point: registers 7 tools, manages clients
 │   ├── schemas.ts              # TypeBox parameter schemas (synced with tool-contracts.json)
 │   ├── bridge-client.ts        # Node JSONL client: spawns Python bridge, sends requests
 │   ├── transport.ts            # JSON-RPC transport via subprocess stdin/stdout
@@ -61,10 +61,9 @@ pi harness (Node/TS)  ──JSONL over stdin/stdout──►  serena_pi_bridge.p
 | Tool | Responsibility | Dispatch in bridge | Relevant contract |
 |---|---|---|---|
 | `find_symbol` | Search the symbol tree by name_path pattern | Flattens `request_full_symbol_tree`, matches via `NamePathMatcher`, optionally filters by `code_snippet` (rg) and `kinds` | `tool-contracts.json:find_symbol` |
-| `get_document_symbols` | *(deprecated)* Indented text tree of symbols in a file | `ls.request_document_symbols`, recursive formatting | `tool-contracts.json:get_document_symbols` |
 | `get_document_overview` | Two-section overview: Imports (classified) + Symbols (with line ranges) | `parse_imports` → classify/resolve → `request_document_symbols` → filter imported bindings → format | `tool-contracts.json:get_document_overview` |
 | `get_type` | Resolve a name_path to its defining type | `resolve_unique_symbol` → `ls.request_defining_symbol` | `tool-contracts.json:get_type` |
-| `get_references` | Find all references to a symbol | `resolve_unique_symbol` → `ls.request_references` → resolve each symbol at reference location | `tool-contracts.json:get_references` |
+| `get_references` | Find all references to a symbol, each with `referrer` (enclosing scope) | `resolve_unique_symbol` → `ls.request_references` → resolve each symbol at reference location | `tool-contracts.json:get_references` |
 | `get_implementations` | Find interface/abstract implementations | `resolve_unique_symbol` → `ls.request_implementing_symbols`; graceful error if LSP doesn't support it | `tool-contracts.json:get_implementations` |
 | `get_docstring` | Hover text for a symbol | `resolve_unique_symbol` → `ls.request_hover`, text extraction | `tool-contracts.json:get_docstring` |
 | `rename_symbol` | Rename across the project | `resolve_unique_symbol` → `ls.request_rename_symbol_edit` → `ls.apply_text_edits_to_file` | `tool-contracts.json:rename_symbol` |
@@ -133,7 +132,6 @@ A standalone Python CLI for manual LSP tool invocation. Calls the `Bridge` class
 |---|---|---|
 | `find_symbol` | `--name-path` | `--relative-path`, `--code-snippet`, `--kinds`, `--max-matches` |
 | `get_document_overview` | `--relative-path` | `--depth` |
-| `get_document_symbols` | `--relative-path` | `--depth` |
 | `get_type` | `--name-path` | `--relative-path` |
 | `get_references` | `--name-path` | `--relative-path` |
 | `get_implementations` | `--name-path` | `--relative-path` |
@@ -177,7 +175,6 @@ Ambiguous `name_path` resolutions print a candidate list to stderr with suggeste
 ## Gotchas
 
 - `rename_symbol` applies the rename immediately via LSP — it mutates files in the user's project. Use it only when the agent intends a real rename. The LSP may reject the request if the workspace has errors.
-- `get_document_symbols` is deprecated — prefer `get_document_overview`, which also returns symbol line ranges and imports.
 - `find_implementations` may fail with "not supported by the active language server" if the server doesn't support `textDocument/implementation`. This is handled gracefully.
 - `relative_path` values are canonicalised by the bridge: converted to project-root-relative paths. If the path doesn't resolve, the tool will fail with a "File not found" error.
-- `relative_path` is optional for all tools except `get_document_symbols` (which needs a file path). Omit it for project-wide search.
+- `relative_path` is optional for all tools except `get_document_overview` (which needs a file path). Omit it for project-wide search.

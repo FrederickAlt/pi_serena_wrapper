@@ -63,11 +63,6 @@ export const toolSchemas = {
     relative_path: Type.Optional(RelativePath),
   }),
 
-  get_document_symbols: Type.Object({
-    relative_path: RelativePath,
-    depth: Type.Optional(Type.Number({ description: "Descendant depth to include. Default 0." })),
-  }),
-
   find_symbol: Type.Object({
     name_path: Type.String({ description: "Serena symbol name path pattern. Matched component-by-component, right-to-left, each component exact. Use leading / for absolute (exact full) match." }),
     relative_path: Type.Optional(RelativePath),

@@ -3,7 +3,6 @@
 
 Issue #1 — init/shutdown lifecycle.
 Issue #3 — find_symbol tool.
-Issue #4 — get_document_symbols tool.
 Issue #5 — get_type tool.
 Issue #6 — get_references tool.
 Issue #7 — get_implementations tool.
@@ -40,6 +39,7 @@ from solidlsp.settings import SolidLSPSettings
 from solidlsp.ls_utils import PathUtils
 
 from name_path import (
+    _is_dot_path,
     compute_name_path,
     NamePathMatcher,
     resolve_unique_symbol,
@@ -109,6 +109,7 @@ class Bridge:
         self.language: str | None = None
         self._languages: list[str] = []
         self._ls_map: dict[str, SolidLanguageServer] = {}
+        self.exclude_dot_paths: bool = True
         # Cache the tool contracts for validation
         self._tool_contracts: dict[str, object] | None = None
 
@@ -153,6 +154,9 @@ class Bridge:
             ls_instance.start()
             self._ls_map[str(lang)] = ls_instance
 
+        # Parse exclude_dot_paths (default True to skip dot-directories during indexing)
+        self.exclude_dot_paths = self._read_exclude_dot_paths(project_root)
+
         # Primary (first) language server for project-wide tools
         self.language = str(Language(languages[0]))
         self.ls = self._ls_map[self.language]
@@ -162,6 +166,7 @@ class Bridge:
             "ok": True,
             "language": self.language,
             "languages": [str(Language(l)) for l in languages],
+            "exclude_dot_paths": self.exclude_dot_paths,
             "cwd": project_root,
         }
 
@@ -195,8 +200,6 @@ class Bridge:
 
         if tool_name == "find_symbol":
             return self._find_symbol(params)
-        elif tool_name == "get_document_symbols":
-            return self._get_document_symbols(params)
         elif tool_name == "get_type":
             return self._get_type(params)
         elif tool_name == "get_references":
@@ -253,6 +256,8 @@ class Bridge:
 
     def _find_symbol(self, params: dict[str, object]) -> dict[str, object]:
         name_path_str = str(params["name_path"])
+        if not name_path_str.strip():
+            raise ValueError("name_path must not be empty or whitespace-only")
         relative_path = params.get("relative_path")
         if relative_path is not None:
             relative_path = str(relative_path)
@@ -276,20 +281,31 @@ class Bridge:
 
         matcher = NamePathMatcher(name_path_str)
 
-        # 1. Get symbol tree
-        assert self.ls is not None
-        tree = self.ls.request_full_symbol_tree(
-            within_relative_path=relative_path if relative_path else None
-        )
+        # 1. Determine which language servers to query
+        if relative_path is not None:
+            # Per-file dispatch: use the LS for this file's extension
+            ls_instances = [self._ls_for_file(relative_path)]
+        else:
+            # Project-wide: iterate all configured language servers
+            ls_instances = list(self._ls_map.values())
 
-        # 2. Flatten and match
-        flat_symbols = list(self._flatten_tree(tree))
-
+        # 2. Get symbol trees from all relevant LS instances
         matched: list[UnifiedSymbolInformation] = []
-        for sym in flat_symbols:
-            np = compute_name_path(sym)
-            if matcher.matches(np):
-                matched.append(sym)
+        for ls in ls_instances:
+            tree = ls.request_full_symbol_tree(
+                within_relative_path=relative_path if relative_path else None
+            )
+            flat_symbols = list(self._flatten_tree(tree))
+            for sym in flat_symbols:
+                # Apply exclude_dot_paths filtering
+                if self.exclude_dot_paths:
+                    loc = sym.get("location") or {}
+                    rel = loc.get("relativePath")
+                    if rel and _is_dot_path(str(rel)):
+                        continue
+                np = compute_name_path(sym)
+                if matcher.matches(np):
+                    matched.append(sym)
 
         # 3. Filter by code_snippet (rg)
         if code_snippet is not None:
@@ -328,50 +344,19 @@ class Bridge:
             "truncated": truncated,
         }
 
-    # -- get_document_symbols tool -----------------------------------------
-
-    def _get_document_symbols(self, params: dict[str, object]) -> str:
-        """Return an indented plain-text tree of document symbols.
-
-        Each line is ``Kind Name`` with 2 spaces per nesting level.
-        *depth* controls how many levels of children to include (0 = top-level only).
-        
-        Dispatches to the correct language server based on file extension.
-        """
-        relative_path = str(params["relative_path"])
-        depth = int(params.get("depth", 0))
-        ls = self._ls_for_file(relative_path)
-        doc_symbols = ls.request_document_symbols(relative_path)
-        return self._format_symbols(doc_symbols.root_symbols, depth, 0)
-
-    @staticmethod
-    def _format_symbols(
-        symbols: list,
-        max_depth: int,
-        current_depth: int,
-    ) -> str:
-        """Recursively format a list of UnifiedSymbolInformation as indented text."""
-        lines: list[str] = []
-        indent = "  " * current_depth
-        for sym in symbols:
-            kind_name = SymbolKind(sym["kind"]).name
-            lines.append(f"{indent}{kind_name} {sym['name']}")
-            if current_depth < max_depth:
-                children = sym.get("children", [])
-                if children:
-                    lines.append(
-                        Bridge._format_symbols(children, max_depth, current_depth + 1)
-                    )
-        return "\n".join(lines)
-
     # -- get_type tool -----------------------------------------------------
 
     def _get_type(self, params: dict[str, object]) -> dict[str, object]:
         """Resolve a name_path to its defining symbol and return compact info."""
         name_path = str(params["name_path"])
+        if not name_path.strip():
+            raise ValueError("name_path must not be empty or whitespace-only")
         relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
-        symbol = resolve_unique_symbol_via_workspace(self.ls, name_path, relative_path)
+        ls_list = self._ls_list_for(relative_path)
+        symbol = resolve_unique_symbol_via_workspace(
+            ls_list, name_path, relative_path, exclude_dot_paths=self.exclude_dot_paths
+        )
 
         # Get the position from selectionRange (fall back to range)
         selection_range = symbol.get("selectionRange") or symbol.get("range")
@@ -387,8 +372,11 @@ class Bridge:
         if not relative_file_path:
             raise ValueError("Symbol has no relativePath in location.")
 
+        # Use the LS appropriate for the resolved symbol's file
+        defining_ls = self._ls_for_file(relative_file_path)
+
         # Go to definition
-        defining = self.ls.request_defining_symbol(
+        defining = defining_ls.request_defining_symbol(
             relative_file_path,  # type: ignore[arg-type]
             line,
             column,
@@ -399,10 +387,13 @@ class Bridge:
 
         # Format compact result
         defining_location = defining.get("location") or {}
-        defining_selection_range = defining.get("selectionRange") or defining.get("range") or {}
+        # Use selectionRange for the start (name position) and range for the
+        # end (body position) so the output covers the full body span.
+        defining_selection_range = defining.get("selectionRange") or {}
+        defining_body_range = defining.get("range") or {}
 
         start_line = defining_selection_range.get("start", {}).get("line", 0) + 1
-        end_line = defining_selection_range.get("end", {}).get("line", 0) + 1
+        end_line = defining_body_range.get("end", {}).get("line", 0) + 1
 
         result: dict[str, object] = {
             "name_path": compute_name_path(defining),
@@ -418,10 +409,14 @@ class Bridge:
     def _get_references(self, params: dict[str, object]) -> list[dict[str, object]]:
         """Find all references to the symbol identified by *name_path*."""
         name_path = str(params["name_path"])
+        if not name_path.strip():
+            raise ValueError("name_path must not be empty or whitespace-only")
         relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
-        assert self.ls is not None
-        symbol = resolve_unique_symbol_via_workspace(self.ls, name_path, relative_path)
+        ls_list = self._ls_list_for(relative_path)
+        symbol = resolve_unique_symbol_via_workspace(
+            ls_list, name_path, relative_path, exclude_dot_paths=self.exclude_dot_paths
+        )
         location = symbol.get("location")
         if not location:
             raise SymbolResolutionError(name_path, f"Symbol {name_path!r} has no source location.")
@@ -433,7 +428,9 @@ class Bridge:
         line = location["range"]["start"]["line"]
         column = location["range"]["start"]["character"]
 
-        references = self.ls.request_references(ref_relative_path, line, column)
+        # Use the LS appropriate for the resolved symbol's file
+        ref_ls = self._ls_for_file(ref_relative_path)
+        references = ref_ls.request_references(ref_relative_path, line, column)
 
         results: list[dict[str, object]] = []
         for ref in references:
@@ -444,8 +441,10 @@ class Bridge:
             ref_col = ref["range"]["start"]["character"]
             ref_end_line = ref["range"]["end"]["line"]
 
+            # Use the LS for the reference's file
+            ref_file_ls = self._ls_for_file(ref_rel)
             # Try to get the symbol at the reference location for richer info
-            sym = self.ls._request_symbol_at_location(ref_rel, ref_line, ref_col)
+            sym = ref_file_ls._request_symbol_at_location(ref_rel, ref_line, ref_col)
             if sym is not None:
                 try:
                     np = compute_name_path(sym)
@@ -459,7 +458,7 @@ class Bridge:
             location_str = f"{ref_rel}:{ref_line + 1}-{ref_end_line + 1}"
 
             results.append({
-                "name_path": np,
+                "referrer": np,
                 "kind": kind_str,
                 "location": location_str,
             })
@@ -471,10 +470,14 @@ class Bridge:
     def _get_implementations(self, params: dict[str, object]) -> dict[str, object]:
         """Resolve *name_path* to a unique symbol and return its implementing symbols."""
         name_path = str(params["name_path"])
+        if not name_path.strip():
+            raise ValueError("name_path must not be empty or whitespace-only")
         relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
-        assert self.ls is not None
-        symbol = resolve_unique_symbol_via_workspace(self.ls, name_path, relative_path)
+        ls_list = self._ls_list_for(relative_path)
+        symbol = resolve_unique_symbol_via_workspace(
+            ls_list, name_path, relative_path, exclude_dot_paths=self.exclude_dot_paths
+        )
 
         location = symbol.get("location") or {}
         relative_file_path = location.get("relativePath", "")
@@ -482,8 +485,12 @@ class Bridge:
         line = range_info.get("start", {}).get("line", 0)
         column = range_info.get("start", {}).get("character", 0)
 
+        # Use the LS appropriate for the resolved symbol's file
+        impl_ls = self._ls_for_file(relative_file_path) if relative_file_path else self.ls
+        assert impl_ls is not None
+
         try:
-            results = self.ls.request_implementing_symbols(
+            results = impl_ls.request_implementing_symbols(
                 relative_file_path, line, column
             )
         except Exception as exc:
@@ -522,10 +529,14 @@ class Bridge:
     def _get_docstring(self, params: dict[str, object]) -> str:
         """Return hover text for the symbol identified by *name_path*."""
         name_path = str(params["name_path"])
+        if not name_path.strip():
+            raise ValueError("name_path must not be empty or whitespace-only")
         relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
-        assert self.ls is not None
-        symbol = resolve_unique_symbol_via_workspace(self.ls, name_path, relative_path)
+        ls_list = self._ls_list_for(relative_path)
+        symbol = resolve_unique_symbol_via_workspace(
+            ls_list, name_path, relative_path, exclude_dot_paths=self.exclude_dot_paths
+        )
 
         # Extract position from selectionRange (fall back to range).
         sel_range = symbol.get("selectionRange") or symbol.get("range")
@@ -540,7 +551,9 @@ class Bridge:
             return "No docstring available."
         file_path = location["relativePath"]
 
-        hover = self.ls.request_hover(file_path, line, column)
+        # Use the LS appropriate for the resolved symbol's file
+        doc_ls = self._ls_for_file(file_path)
+        hover = doc_ls.request_hover(file_path, line, column)
         text = self._extract_hover_text(hover)
         return text if text else "No docstring available."
 
@@ -583,12 +596,16 @@ class Bridge:
     def _rename_symbol(self, params: dict[str, object]) -> str:
         """Rename a symbol throughout the project using direct SolidLSP."""
         name_path = str(params["name_path"])
+        if not name_path.strip():
+            raise ValueError("name_path must not be empty or whitespace-only")
         new_name = str(params["new_name"])
         relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
-        assert self.ls is not None
+        ls_list = self._ls_list_for(relative_path)
         try:
-            symbol = resolve_unique_symbol_via_workspace(self.ls, name_path, relative_path)
+            symbol = resolve_unique_symbol_via_workspace(
+                ls_list, name_path, relative_path, exclude_dot_paths=self.exclude_dot_paths
+            )
         except SymbolResolutionError as exc:
             candidates_json = json.dumps(exc.candidates, ensure_ascii=False, default=str)
             return f"Error: {exc} Candidates: {candidates_json}"
@@ -611,8 +628,11 @@ class Bridge:
         if not relative_file_path or not isinstance(relative_file_path, str):
             return f"Error: symbol {name_path!r} has no relative file path"
 
+        # Use the LS appropriate for the resolved symbol's file
+        rename_ls = self._ls_for_file(relative_file_path)
+
         # Request the workspace edit from the LSP
-        workspace_edit = self.ls.request_rename_symbol_edit(
+        workspace_edit = rename_ls.request_rename_symbol_edit(
             relative_file_path, int(line), int(character), new_name
         )
 
@@ -630,14 +650,17 @@ class Bridge:
                 parsed = urllib.parse.urlparse(uri)
                 abs_path = urllib.parse.unquote(parsed.path)
             try:
-                target_relative = os.path.relpath(abs_path, self.ls.repository_root_path)
+                target_relative = os.path.relpath(abs_path, rename_ls.repository_root_path)
             except ValueError:
                 target_relative = abs_path
 
+            # Determine which LS handles this file
+            file_ls = self._ls_for_file(target_relative)
+
             # Open the file buffer, apply edits, then persist to disk
-            with self.ls.open_file(target_relative) as file_buffer:
-                self.ls.apply_text_edits_to_file(target_relative, edits)
-                abs_file_path = Path(self.ls.repository_root_path) / target_relative
+            with file_ls.open_file(target_relative) as file_buffer:
+                file_ls.apply_text_edits_to_file(target_relative, edits)
+                abs_file_path = Path(file_ls.repository_root_path) / target_relative
                 abs_file_path.write_text(file_buffer.contents, encoding="utf-8")
 
         return f"renamed {name_path} to {new_name}"
@@ -679,7 +702,7 @@ class Bridge:
         sections: list[str] = []
 
         if import_pairs:
-            imports_section = self._format_imports_section(import_pairs, relative_path)
+            imports_section = self._format_imports_section(import_pairs, relative_path, ls)
             sections.append("## Imports")
             sections.append(imports_section)
 
@@ -701,6 +724,7 @@ class Bridge:
         self,
         import_pairs: list[tuple[str, str, str]],
         file_relative_path: str,
+        ls: SolidLanguageServer,
     ) -> str:
         """Group imports by source module and produce one line per module.
 
@@ -722,7 +746,7 @@ class Bridge:
             names_str = ", ".join(display_names)
             # Use original names for workspace resolution
             original_names = [orig for orig, _ in name_pairs]
-            classification = self._classify_import(module, original_names, file_relative_path)
+            classification = self._classify_import(module, original_names, file_relative_path, ls)
             lines.append(f"{module} — {names_str} {classification}")
 
         return "\n".join(lines)
@@ -732,6 +756,7 @@ class Bridge:
         module: str,
         names: list[str],
         file_relative_path: str,
+        ls: SolidLanguageServer,
     ) -> str:
         """Classify a source module as internal or external.
 
@@ -741,13 +766,13 @@ class Bridge:
         """
         # Relative import — definitely internal
         if module.startswith("."):
-            location = self._resolve_import_location(names, file_relative_path, module)
+            location = self._resolve_import_location(names, file_relative_path, module, ls)
             if location:
                 return f"[internal → {location}]"
             return "[internal]"
 
         # Non-relative — try to resolve names
-        location = self._resolve_import_location(names, file_relative_path, module)
+        location = self._resolve_import_location(names, file_relative_path, module, ls)
         if location:
             return f"[internal → {location}]"
         return "[external]"
@@ -757,6 +782,7 @@ class Bridge:
         names: list[str],
         file_relative_path: str,
         module: str,
+        ls: SolidLanguageServer,
     ) -> str | None:
         """Try to resolve imported names to a definition location.
 
@@ -769,8 +795,6 @@ class Bridge:
         correctly.  For non-relative specifiers the scope stays the file's
         own directory (existing behaviour).
         """
-        assert self.ls is not None
-
         # Compute the search scope based on the module specifier
         raw_dir = os.path.dirname(file_relative_path)  # empty string for root files
         if module.startswith("."):
@@ -794,7 +818,7 @@ class Bridge:
         for name in names:
             try:
                 symbol = resolve_unique_symbol_via_workspace(
-                    self.ls, name, relative_path=scope_dir
+                    [ls], name, relative_path=scope_dir
                 )
             except Exception:
                 continue
@@ -1067,11 +1091,26 @@ class Bridge:
             rel_norm = str(rel).lstrip("./") or "."
             for occ_start, occ_end in occ_map.get(rel_norm, []):
                 # Check if symbol range overlaps with occurrence range
-                if sym_start >= occ_start and sym_end <= occ_end:
+                if sym_start <= occ_end and sym_end >= occ_start:
                     result.append(sym)
                     break
 
         return result
+
+    @staticmethod
+    def _read_exclude_dot_paths(project_root: str) -> bool:
+        """Read ``exclude_dot_paths`` from ``.serenaproject.yml``.  Defaults to ``True``."""
+        config_path = Path(project_root) / ".serenaproject.yml"
+        if not config_path.is_file():
+            return True
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                cfg: object = yaml.safe_load(f)
+        except yaml.YAMLError:
+            return True
+        if not isinstance(cfg, dict):
+            return True
+        return bool(cfg.get("exclude_dot_paths", True))
 
     @staticmethod
     def _read_languages(project_root: str) -> list[str]:
@@ -1124,6 +1163,17 @@ class Bridge:
         if suffix in self._EXT_TO_LANGUAGE:
             return self._EXT_TO_LANGUAGE[suffix]
         return self.language or ""
+
+    def _ls_list_for(self, relative_path: str | None) -> list[SolidLanguageServer]:
+        """Return the appropriate LS instances to search.
+
+        When *relative_path* is given (scoped to a file or directory), returns
+        a single-element list with the LS for that file's language.  When
+        omitted (project-wide search), returns all configured LS instances.
+        """
+        if relative_path is not None:
+            return [self._ls_for_file(relative_path)]
+        return list(self._ls_map.values())
 
     def _ls_for_file(self, relative_path: str) -> SolidLanguageServer:
         """Return the language server instance appropriate for *relative_path*.

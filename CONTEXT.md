@@ -18,8 +18,7 @@
    Passed to all tools as an optional scoping parameter.
 
    Semantics: scopes the symbol search to files under that path. When omitted,
-   the search runs project-wide. The only exception is `get_document_overview`
-   (and the deprecated `get_document_symbols`), which requires a relative_path
+   the search runs project-wide. The only exception is `get_document_overview`, which requires a relative_path
    because it operates on a single file.
 
    The bridge canonicalises relative_path before passing it to the LSP:
@@ -27,7 +26,7 @@
 
 ## get_document_overview
 
-   Replaces `get_document_symbols`. Returns a two-section plain-text overview of a
+   Returns a two-section plain-text overview of a
    single file: `## Imports` (what the file consumes) and `## Symbols` (what the
    file defines). Each symbol line includes its 1-based body line range:
    `Class UserService:5-67`. Line numbers are 1-based, consistent with pi's
@@ -49,9 +48,6 @@
    imports section.
 
 ## Flagged ambiguities
-
-- `get_document_symbols` is deprecated and replaced by `get_document_overview`.
-  It will be removed after a transition period.
 
 ## SolidLSP
 

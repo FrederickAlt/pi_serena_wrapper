@@ -49,29 +49,6 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // -- get_document_symbols (deprecated) ----------------------------------
-
-  pi.registerTool({
-    name: "get_document_symbols",
-    label: "Get Document Symbols",
-    description: toolDescriptions.get_document_symbols,
-    parameters: toolSchemas.get_document_symbols,
-    promptGuidelines: [
-      "DEPRECATED: Prefer get_document_overview instead, which includes symbol line ranges and file imports.",
-      "This tool returns only a structural outline without line ranges; get_document_overview provides both symbol ranges and import information.",
-    ],
-    execute: async (toolCallId, params, signal) => {
-      const bridge = clientFor();
-      const text = await bridge.callTool("get_document_symbols", params as Record<string, unknown>, signal) as string;
-      return {
-        content: [
-          { type: "text" as const, text },
-        ],
-        details: {},
-      };
-    },
-  });
-
   // -- get_document_overview ----------------------------------------------
 
   pi.registerTool({
@@ -132,7 +109,7 @@ export default function (pi: ExtensionAPI) {
       "Use get_references to find all usages of a symbol across the codebase.",
       "Provide the full Serena name_path (e.g. MyClass/myMethod) to identify the symbol.",
       "Optionally scope the search with relative_path to limit results to a file or directory.",
-      "Each result includes name_path, kind, and location (file:startLine-endLine).",
+      "Each result includes referrer (enclosing scope), kind, and location (file:startLine-endLine).",
     ],
     execute: async (_toolCallId, params, signal) => {
       return wrapAmbiguity(() =>

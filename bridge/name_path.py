@@ -7,11 +7,29 @@ Shared infrastructure used by every pi-serena-lsp tool.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from solidlsp import SolidLanguageServer
     from solidlsp.ls_types import UnifiedSymbolInformation
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+def _is_dot_path(relative_path: str) -> bool:
+    """Return ``True`` if *relative_path* contains a dot-prefixed directory component.
+
+    Dot-prefixed directories are hidden / metadata directories like
+    ``.venv``, ``.git``, ``.sandcastle``, ``.solidlsp``, etc.
+    """
+    if not relative_path:
+        return False
+    # Normalize: strip leading ./ and handle root-edge cases
+    normalized = relative_path.lstrip("./") or "."
+    return any(part.startswith(".") for part in Path(normalized).parts)
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +134,7 @@ def resolve_unique_symbol(
     ls: SolidLanguageServer,
     name_path: str,
     relative_path: str | None = None,
+    exclude_dot_paths: bool = False,
 ) -> UnifiedSymbolInformation:
     """Resolve *name_path* to a unique ``UnifiedSymbolInformation``.
 
@@ -131,8 +150,13 @@ def resolve_unique_symbol(
     :param ls: a started ``SolidLanguageServer`` instance.
     :param name_path: the name_path pattern to search for.
     :param relative_path: optional file or directory to scope the search.
+    :param exclude_dot_paths: if ``True``, symbols from dot-prefixed directories
+        (``.venv``, ``.git``, etc.) are excluded.
     :raises SymbolResolutionError: on ambiguity or no match.
     """
+    if not name_path.strip():
+        raise SymbolResolutionError(name_path, "name_path must not be empty or whitespace-only")
+
     from solidlsp.ls_types import SymbolKind  # noqa: F811
 
     tree = ls.request_full_symbol_tree(within_relative_path=relative_path)
@@ -148,6 +172,13 @@ def resolve_unique_symbol(
             for child in symbol.get("children", []):
                 _collect(child)
             return
+
+        # Apply dot-path filtering if enabled
+        if exclude_dot_paths:
+            loc = symbol.get("location") or {}
+            rel_path = loc.get("relativePath")
+            if rel_path and _is_dot_path(str(rel_path)):
+                return
 
         computed = compute_name_path(symbol)
         if matcher.matches(computed):
@@ -196,7 +227,7 @@ def resolve_unique_symbol(
 
     raise SymbolResolutionError(
         name_path,
-        "No symbol matches this name_path in the project.",
+        f"No symbol matches '{name_path}' in the project.",
     )
 
 
@@ -205,18 +236,44 @@ def resolve_unique_symbol(
 # ---------------------------------------------------------------------------
 
 
-def resolve_unique_symbol_via_workspace(
+def _merge_fallback_candidates(
+    candidates: dict[str, list[UnifiedSymbolInformation]],
     ls: SolidLanguageServer,
     name_path: str,
+    relative_path: str | None,
+    exclude_dot_paths: bool,
+) -> None:
+    """Fall back to :func:`resolve_unique_symbol` on *ls* and merge result.
+
+    If :func:`resolve_unique_symbol` succeeds (single match), the result is
+    added to *candidates* under its computed name_path.  If it raises
+    ``SymbolResolutionError`` with candidates (ambiguity), the error is
+    re-raised so the caller can report it.  If it raises with zero candidates,
+    the error is silently ignored (another language server may succeed).
+    """
+    try:
+        result = resolve_unique_symbol(ls, name_path, relative_path, exclude_dot_paths=exclude_dot_paths)
+        computed = compute_name_path(result)
+        candidates.setdefault(computed, []).append(result)
+    except SymbolResolutionError as exc:
+        if exc.candidates:
+            raise  # Re-raise ambiguity so the caller can report it
+        # Zero candidates — ignore, another LS may succeed
+
+
+def resolve_unique_symbol_via_workspace(
+    ls_list: list[SolidLanguageServer],
+    name_path: str,
     relative_path: str | None = None,
+    exclude_dot_paths: bool = False,
 ) -> UnifiedSymbolInformation:
     """Resolve *name_path* to a unique symbol using ``workspace/symbol``.
 
     Avoids the expensive ``request_full_symbol_tree`` scan used by
     :func:`resolve_unique_symbol`.  Works by:
 
-    1. Querying the LSP's ``workspace/symbol`` with the last component of
-       *name_path* to get candidate symbols (fast — LSP-side index).
+    1. Querying each language server's ``workspace/symbol`` with the last
+       component of *name_path* to get candidate symbols (fast — LSP-side index).
     2. For each candidate, calling ``request_symbol_at_location`` to get the
        full symbol with parent chain.
     3. Computing the ``name_path`` via :func:`compute_name_path` and matching
@@ -224,12 +281,17 @@ def resolve_unique_symbol_via_workspace(
     4. Resolving to a unique symbol (same disambiguation logic as
        :func:`resolve_unique_symbol`).
 
-    If ``workspace/symbol`` is not supported by the language server (returns
-    ``None`` or raises), falls back to :func:`resolve_unique_symbol`.
+    If ``workspace/symbol`` is not supported by a language server (returns
+    ``None`` or raises), falls back to :func:`resolve_unique_symbol` for that
+    server.
 
-    :param ls: a started ``SolidLanguageServer`` instance.
+    :param ls_list: one or more started ``SolidLanguageServer`` instances.
+        Callers should pass ``[ls_for_file]`` when *relative_path* scopes to a
+        single file, or all LS instances when searching project-wide.
     :param name_path: the name_path pattern to search for.
     :param relative_path: optional file or directory to scope the search.
+    :param exclude_dot_paths: if ``True``, symbols from dot-prefixed directories
+        (``.venv``, ``.git``, etc.) are excluded.
     :raises SymbolResolutionError: on ambiguity or no match.
     """
     # Parse the last component from the name_path pattern
@@ -237,73 +299,93 @@ def resolve_unique_symbol_via_workspace(
     parts = [p for p in pattern.split("/") if p]
     last_component = parts[-1] if parts else ""
 
+    if not name_path.strip():
+        raise SymbolResolutionError(name_path, "name_path must not be empty or whitespace-only")
+
     if not last_component:
         raise SymbolResolutionError(name_path, "Empty name_path pattern")
 
-    # Try workspace/symbol first
-    try:
-        candidates_raw = ls.request_workspace_symbol(last_component)
-    except Exception:
-        # workspace/symbol not supported — fall back to full tree
-        return resolve_unique_symbol(ls, name_path, relative_path)
-
-    if candidates_raw is None:
-        # workspace/symbol not supported (returned None)
-        return resolve_unique_symbol(ls, name_path, relative_path)
-
-    if not candidates_raw:
-        raise SymbolResolutionError(
-            name_path,
-            f"No symbols found matching '{last_component}' via workspace/symbol",
-        )
+    if not ls_list:
+        raise SymbolResolutionError(name_path, "No language servers available")
 
     from solidlsp.ls_utils import PathUtils
     from solidlsp.ls_types import SymbolKind  # noqa: F811
-    from pathlib import Path
 
     matcher = NamePathMatcher(name_path)
     candidates: dict[str, list[UnifiedSymbolInformation]] = {}
 
-    for raw_sym in candidates_raw:
-        location = raw_sym.get("location")
-        if not location:
-            continue
-
-        uri = location.get("uri", "")
-        if not uri:
-            continue
-
-        # Convert URI → absolute path → project-relative path
+    for ls in ls_list:
+        # Try workspace/symbol first
         try:
-            abs_path = PathUtils.uri_to_path(uri)
-            rel_path = str(Path(abs_path).resolve().relative_to(ls.repository_root_path))
-        except (ValueError, Exception):
+            candidates_raw = ls.request_workspace_symbol(last_component)
+        except Exception:
+            # workspace/symbol not supported — fall back to full tree for this LS
+            _merge_fallback_candidates(
+                candidates, ls, name_path, relative_path, exclude_dot_paths
+            )
             continue
 
-        # Filter by relative_path if provided (handle both file and directory scopes)
-        if relative_path is not None:
-            norm_rel = relative_path.rstrip("/")
-            if rel_path != norm_rel and not rel_path.startswith(norm_rel + "/"):
+        if candidates_raw is None:
+            # workspace/symbol not supported (returned None)
+            _merge_fallback_candidates(
+                candidates, ls, name_path, relative_path, exclude_dot_paths
+            )
+            continue
+
+        if not candidates_raw:
+            continue
+
+        for raw_sym in candidates_raw:
+            location = raw_sym.get("location")
+            if not location:
                 continue
 
-        # Get position from the LSP location
-        range_info = location.get("range", {})
-        if not isinstance(range_info, dict):
-            continue
-        start = range_info.get("start", {})
-        if not isinstance(start, dict):
-            continue
-        line = start.get("line", 0)
-        col = start.get("character", 0)
+            uri = location.get("uri", "")
+            if not uri:
+                continue
 
-        # Get full symbol info with parent chain from this single file
-        full_sym = ls.request_symbol_at_location(rel_path, line, col)
-        if full_sym is None:
-            continue
+            # Convert URI → absolute path → project-relative path
+            try:
+                abs_path = PathUtils.uri_to_path(uri)
+                rel_path = str(Path(abs_path).resolve().relative_to(ls.repository_root_path))
+            except (ValueError, Exception):
+                continue
 
-        computed = compute_name_path(full_sym)
-        if matcher.matches(computed):
-            candidates.setdefault(computed, []).append(full_sym)
+            # Apply dot-path filtering if enabled
+            if exclude_dot_paths and _is_dot_path(rel_path):
+                continue
+
+            # Filter by relative_path if provided (handle both file and directory scopes)
+            if relative_path is not None:
+                norm_rel = relative_path.rstrip("/")
+                if rel_path != norm_rel and not rel_path.startswith(norm_rel + "/"):
+                    continue
+
+            # Get position from the LSP location
+            range_info = location.get("range", {})
+            if not isinstance(range_info, dict):
+                continue
+            start = range_info.get("start", {})
+            if not isinstance(start, dict):
+                continue
+            line = start.get("line", 0)
+            col = start.get("character", 0)
+
+            # Get full symbol info with parent chain from this single file
+            full_sym = ls.request_symbol_at_location(rel_path, line, col)
+            if full_sym is None:
+                continue
+
+            # Apply dot-path filtering again (full_sym location may differ)
+            if exclude_dot_paths:
+                full_loc = full_sym.get("location") or {}
+                full_rel = full_loc.get("relativePath")
+                if full_rel and _is_dot_path(str(full_rel)):
+                    continue
+
+            computed = compute_name_path(full_sym)
+            if matcher.matches(computed):
+                candidates.setdefault(computed, []).append(full_sym)
 
     # Resolve uniqueness — same logic as resolve_unique_symbol
     all_candidates: list[UnifiedSymbolInformation] = []
@@ -342,5 +424,5 @@ def resolve_unique_symbol_via_workspace(
 
     raise SymbolResolutionError(
         name_path,
-        "No symbol matches this name_path in the project.",
+        f"No symbol matches '{name_path}' in the project.",
     )

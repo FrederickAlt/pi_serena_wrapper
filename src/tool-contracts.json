@@ -21,24 +21,6 @@
         "additionalProperties": false
       }
     },
-    "get_document_symbols": {
-      "description": "Get a plain-text tree of document symbols. Each line is `Kind Name` with 2 spaces per nesting level.",
-      "params": {
-        "type": "object",
-        "properties": {
-          "relative_path": {
-            "type": "string",
-            "description": "Path to a source file or directory, relative to the current project root."
-          },
-          "depth": {
-            "type": "number",
-            "description": "Descendant depth to include. Default 0."
-          }
-        },
-        "required": ["relative_path"],
-        "additionalProperties": false
-      }
-    },
     "find_symbol": {
       "description": "Search Serena's LSP symbol index by name path pattern (component-by-component, right-to-left match).",
       "params": {

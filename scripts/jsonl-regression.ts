@@ -3,7 +3,7 @@
  * Regression test for the Serena bridge — Issues #1, #3, #4, #5.
  */
 
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -218,23 +218,25 @@ async function testInitShutdown(): Promise<void> {
   assert(typeof tsResult.cwd === "string", `Should return cwd: ${JSON.stringify(tsResult)}`);
   console.log(`TypeScript init OK: language=${tsResult.language}`);
 
-  // --- get_document_symbols on TypeScript fixture, depth=0 ---
-  const symbolsDepth0 = await client.callTool("get_document_symbols", { relative_path: "src/index.ts", depth: 0 }) as string;
-  assert(typeof symbolsDepth0 === "string", `depth=0 should return a string, got ${typeof symbolsDepth0}`);
-  const lines0 = symbolsDepth0.trim().split("\n");
+  // --- get_document_overview on TypeScript fixture, depth=0 ---
+  const tsOverviewDepth0 = await client.callTool("get_document_overview", { relative_path: "src/index.ts", depth: 0 }) as string;
+  assert(typeof tsOverviewDepth0 === "string", `depth=0 should return a string, got ${typeof tsOverviewDepth0}`);
+  assert(tsOverviewDepth0.includes("## Symbols"), "depth=0 should have Symbols section");
+  const symbolsSection0 = tsOverviewDepth0.split("## Symbols")[1] || "";
+  const lines0 = symbolsSection0.trim().split("\n").filter(l => l.trim());
   assert(lines0.length > 0, "depth=0 should return at least one symbol");
   for (const line of lines0) {
-    assert(/^[A-Z][a-zA-Z]+ \w+/.test(line), `depth=0 line should match "Kind Name": "${line}"`);
-    assert(!line.startsWith(" "), `depth=0 line should have no indent: "${line}"`);
+    assert(/^[A-Z][a-zA-Z]+ \w+:\d+-\d+$/.test(line), `depth=0 line should match "Kind Name:start-end": "${line}"`);
   }
-  console.log(`get_document_symbols depth=0 OK: ${lines0.length} top-level symbol(s)`);
+  console.log(`get_document_overview depth=0 OK: ${lines0.length} top-level symbol(s)`);
 
-  // --- get_document_symbols on TypeScript fixture, depth=1 ---
-  const symbolsDepth1 = await client.callTool("get_document_symbols", { relative_path: "src/index.ts", depth: 1 }) as string;
-  assert(typeof symbolsDepth1 === "string", `depth=1 should return a string, got ${typeof symbolsDepth1}`);
-  const lines1 = symbolsDepth1.trim().split("\n");
+  // --- get_document_overview on TypeScript fixture, depth=1 ---
+  const tsOverviewDepth1 = await client.callTool("get_document_overview", { relative_path: "src/index.ts", depth: 1 }) as string;
+  assert(typeof tsOverviewDepth1 === "string", `depth=1 should return a string, got ${typeof tsOverviewDepth1}`);
+  const symbolsSection1 = tsOverviewDepth1.split("## Symbols")[1] || "";
+  const lines1 = symbolsSection1.trim().split("\n").filter(l => l.trim());
   assert(lines1.length >= lines0.length, "depth=1 should include at least as many lines as depth=0");
-  console.log(`get_document_symbols depth=1 OK: ${lines1.length} lines`);
+  console.log(`get_document_overview depth=1 OK: ${lines1.length} lines`);
 
   await client.shutdown();
 
@@ -255,12 +257,14 @@ async function testInitShutdown(): Promise<void> {
   assert(pyResult.language === "python", `Should be python from config: ${JSON.stringify(pyResult)}`);
   console.log(`Python init OK: language=${pyResult.language}`);
 
-  // --- get_document_symbols on Python fixture, depth=0 ---
-  const pySymbolsDepth0 = await client.callTool("get_document_symbols", { relative_path: "test.py", depth: 0 }) as string;
-  assert(typeof pySymbolsDepth0 === "string", `Python depth=0 should return a string, got ${typeof pySymbolsDepth0}`);
-  const pyLines0 = pySymbolsDepth0.trim().split("\n");
+  // --- get_document_overview on Python fixture, depth=0 ---
+  const pyOverviewDepth0 = await client.callTool("get_document_overview", { relative_path: "test.py", depth: 0 }) as string;
+  assert(typeof pyOverviewDepth0 === "string", `Python depth=0 should return a string, got ${typeof pyOverviewDepth0}`);
+  assert(pyOverviewDepth0.includes("## Symbols"), "Python depth=0 should have Symbols section");
+  const pySymbolsSection = pyOverviewDepth0.split("## Symbols")[1] || "";
+  const pyLines0 = pySymbolsSection.trim().split("\n").filter(l => l.trim());
   assert(pyLines0.length > 0, "Python depth=0 should return at least one symbol");
-  console.log(`Python get_document_symbols depth=0 OK: ${pyLines0.length} top-level symbol(s)`);
+  console.log(`Python get_document_overview depth=0 OK: ${pyLines0.length} top-level symbol(s)`);
 
   await client.shutdown();
 
@@ -996,23 +1000,6 @@ async function testMixedLanguageOverview(): Promise<void> {
 
   console.log("  => Python overview in mixed project OK");
 
-  // --- get_document_symbols also dispatches correctly ---
-  const tsSymbols = await client.callTool("get_document_symbols", {
-    relative_path: "src/index.ts",
-    depth: 1,
-  }) as string;
-  assert(typeof tsSymbols === "string", "TS get_document_symbols should return string");
-  assert(tsSymbols.includes("MyService"), "TS symbols should include MyService");
-
-  const pySymbols = await client.callTool("get_document_symbols", {
-    relative_path: "main.py",
-    depth: 1,
-  }) as string;
-  assert(typeof pySymbols === "string", "Python get_document_symbols should return string");
-  assert(pySymbols.includes("UserService"), "Python symbols should include UserService");
-
-  console.log("  => get_document_symbols dispatch OK");
-
   await client.shutdown();
 
   // --- Auto-detect and write .serenaproject.yml on first init ---
@@ -1083,14 +1070,14 @@ async function testLazyLanguageStart(): Promise<void> {
   assert(configAfter.includes("typescript"), `.serenaproject.yml should still include typescript:\n${configAfter}`);
   console.log("  => .serenaproject.yml updated OK");
 
-  // Call get_document_symbols on the Python file (also uses _ls_for_file)
-  const pySymbols = await client.callTool("get_document_symbols", {
+  // Call get_document_overview on the Python file (also uses _ls_for_file)
+  const pyOverview2 = await client.callTool("get_document_overview", {
     relative_path: "main.py",
     depth: 0,
   }) as string;
-  assert(typeof pySymbols === "string", "Python get_document_symbols should return string");
-  assert(pySymbols.includes("UserService"), "Python symbols should include UserService");
-  console.log("  => Python get_document_symbols via lazy start OK");
+  assert(typeof pyOverview2 === "string", "Python get_document_overview should return string");
+  assert(pyOverview2.includes("UserService"), "Python overview should include UserService");
+  console.log("  => Python get_document_overview via lazy start OK");
 
   await client.shutdown();
 
@@ -1144,12 +1131,28 @@ async function run(): Promise<void> {
   console.log(`\nPASS jsonl regression: ${fixtureRoot}`);
 }
 
+async function cleanupSandcastleWorktrees(): Promise<void> {
+  const worktreesDir = path.join(packageRoot, ".sandcastle", "worktrees");
+  if (!existsSync(worktreesDir)) return;
+  try {
+    const entries = await readdir(worktreesDir);
+    for (const entry of entries) {
+      if (entry.startsWith("pi-test-disposable-")) {
+        const fullPath = path.join(worktreesDir, entry);
+        await rm(fullPath, { recursive: true, force: true });
+        console.log(`Cleaned up sandcastle worktree: ${fullPath}`);
+      }
+    }
+  } catch { /* ignore */ }
+}
+
 run()
   .then(async () => {
     try {
       await rm(fixtureRoot, { recursive: true, force: true });
       console.log(`Cleaned up fixture: ${fixtureRoot}`);
     } catch { /* ignore */ }
+    await cleanupSandcastleWorktrees();
   })
   .catch(async (error) => {
     console.error(`FAIL jsonl regression: ${error instanceof Error ? error.stack : error}`);
@@ -1159,5 +1162,6 @@ run()
     try {
       await rm(fixtureRoot, { recursive: true, force: true });
     } catch { /* ignore */ }
+    await cleanupSandcastleWorktrees();
     process.exitCode = 1;
   });
