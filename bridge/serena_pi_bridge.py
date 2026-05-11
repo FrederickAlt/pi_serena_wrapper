@@ -52,6 +52,35 @@ from import_parser import parse_imports
 PACKAGE_ROOT = _BRIDGE_DIR.parent
 
 
+def _resolve_python_module(file_dir: str, module: str) -> str:
+    """Resolve a Python-style relative module specifier to a filesystem path.
+
+    Python relative imports use leading dots for depth and dots as module
+    separators: ``.utils`` (same package), ``..src.utils`` (parent → src/utils).
+
+    Returns a normalized relative path (e.g. ``src/utils``).
+    """
+    # Count leading dots
+    depth = 0
+    rest = module
+    while rest.startswith("."):
+        depth += 1
+        rest = rest[1:]
+
+    # Convert remaining dots to path separators
+    module_path = rest.replace(".", "/") if rest else ""
+
+    # Go up (depth - 1) levels from file_dir (. = same dir, .. = one up)
+    up = file_dir
+    for _ in range(depth - 1):
+        up = os.path.dirname(up) or "."
+
+    # Join and normalize
+    if module_path:
+        return os.path.normpath(os.path.join(up, module_path))
+    return os.path.normpath(up)
+
+
 # ---------------------------------------------------------------------------
 # Bridge
 # ---------------------------------------------------------------------------
@@ -712,13 +741,13 @@ class Bridge:
         """
         # Relative import — definitely internal
         if module.startswith("."):
-            location = self._resolve_import_location(names, file_relative_path)
+            location = self._resolve_import_location(names, file_relative_path, module)
             if location:
                 return f"[internal → {location}]"
             return "[internal]"
 
         # Non-relative — try to resolve names
-        location = self._resolve_import_location(names, file_relative_path)
+        location = self._resolve_import_location(names, file_relative_path, module)
         if location:
             return f"[internal → {location}]"
         return "[external]"
@@ -727,16 +756,38 @@ class Bridge:
         self,
         names: list[str],
         file_relative_path: str,
+        module: str,
     ) -> str | None:
         """Try to resolve imported names to a definition location.
 
         Returns ``"rel/path:start-end"`` on first successful resolution,
         or ``None`` if all names fail to resolve.
+
+        For relative module specifiers (starting with ``.``), the search
+        scope is computed by resolving *module* against the file's parent
+        directory, so cross-directory imports (e.g. ``../src/foo``) scope
+        correctly.  For non-relative specifiers the scope stays the file's
+        own directory (existing behaviour).
         """
         assert self.ls is not None
 
-        # Scope the search to the directory containing the overviewed file
-        scope_dir = os.path.dirname(file_relative_path) or None
+        # Compute the search scope based on the module specifier
+        file_dir = os.path.dirname(file_relative_path) or "."
+        if module.startswith("."):
+            # Relative import — resolve against the file's parent directory.
+            # Two styles:
+            #   TS  — "../src/foo"  (slashes, os.path handles natively)
+            #   Py  — "..src.utils"  (dots as module separator)
+            if "/" in module:
+                # TypeScript-style: slashes act as path separators
+                resolved = os.path.normpath(os.path.join(file_dir, module))
+            else:
+                # Python-style: leading dots = depth, rest uses "." as separator
+                resolved = _resolve_python_module(file_dir, module)
+            scope_dir = os.path.dirname(resolved) or None
+        else:
+            # Non-relative import — scope to the file's own directory
+            scope_dir = file_dir or None
 
         for name in names:
             try:
