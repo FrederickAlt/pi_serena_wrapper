@@ -678,6 +678,65 @@ async function writePythonFixtureWithAliasedImports(): Promise<void> {
   ].join("\n") + "\n");
 }
 
+async function testGetDocumentOverviewCrossDir(): Promise<void> {
+  // --- TypeScript cross-directory fixture ---
+  await writeTypeScriptCrossDirFixture();
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - typescript\n",
+  );
+  let initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `TS cross-dir init should succeed: ${JSON.stringify(initResult)}`);
+
+  await new Promise(r => setTimeout(r, 3000));
+
+  const tsOverview = await client.callTool("get_document_overview", {
+    relative_path: "scripts/test.ts",
+    depth: 0,
+  }) as string;
+
+  console.log("TS cross-dir import overview:\n" + tsOverview);
+
+  // Imports section should show internal resolution with location
+  assert(tsOverview.includes("## Imports"), "Should have Imports section");
+  // The import from '../src/bridge-client.js' should resolve to src/bridge-client.ts
+  assert(/\[internal → .*bridge-client\.ts:\d+-\d+\]/.test(tsOverview),
+    "Cross-dir internal import should resolve to bridge-client.ts with line range");
+  // Should NOT show bare [internal] for the resolved import
+  assert(!/bridge-client.*\[internal\]\s*$/.test(tsOverview),
+    "Cross-dir import should not fall back to bare [internal]");
+
+  console.log("  => TS cross-dir import resolution OK");
+
+  await client.shutdown();
+
+  // --- Python cross-directory fixture ---
+  await writePythonCrossDirFixture();
+  initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Python cross-dir init should succeed: ${JSON.stringify(initResult)}`);
+
+  await new Promise(r => setTimeout(r, 3000));
+
+  const pyOverview = await client.callTool("get_document_overview", {
+    relative_path: "scripts/test.py",
+    depth: 0,
+  }) as string;
+
+  console.log("Python cross-dir import overview:\n" + pyOverview);
+
+  // Imports section should show internal resolution with location
+  assert(pyOverview.includes("## Imports"), "Python should have Imports section");
+  // The relative import from '..src.utils' should resolve to src/utils.py
+  assert(/\[internal → .*utils\.py:\d+-\d+\]/.test(pyOverview),
+    "Python cross-dir internal import should resolve to utils.py with line range");
+  assert(!/utils.*\[internal\]\s*$/.test(pyOverview),
+    "Python cross-dir import should not fall back to bare [internal]");
+
+  console.log("  => Python cross-dir import resolution OK");
+
+  await client.shutdown();
+}
+
 async function testGetDocumentOverviewWithAliases(): Promise<void> {
   // --- TypeScript aliased fixture ---
   await writeTypeScriptFixtureWithAliasedImports();
@@ -761,6 +820,61 @@ async function testGetDocumentOverviewWithAliases(): Promise<void> {
   await client.shutdown();
 }
 
+// -- cross-directory import fixtures (Issue #19) ----------------------------
+
+async function writeTypeScriptCrossDirFixture(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(path.join(fixtureRoot, "src"), { recursive: true });
+  await mkdir(path.join(fixtureRoot, "scripts"), { recursive: true });
+  await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ type: "module" }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "tsconfig.json"), JSON.stringify({
+    compilerOptions: { target: "ES2020", module: "ESNext", moduleResolution: "Node", strict: true },
+    include: ["src/**/*.ts", "scripts/**/*.ts"],
+  }, null, 2) + "\n");
+
+  // Source file that defines the exported symbol
+  await writeFile(path.join(fixtureRoot, "src", "bridge-client.ts"), [
+    "export function SerenaBridgeClient(): string {",
+    "  return 'bridge-client';",
+    "}",
+    "",
+  ].join("\n") + "\n");
+
+  // File in a subdirectory that imports from a parent directory
+  await writeFile(path.join(fixtureRoot, "scripts", "test.ts"), [
+    "import { SerenaBridgeClient } from '../src/bridge-client.js';",
+    "",
+    "const result = SerenaBridgeClient();",
+    "",
+  ].join("\n") + "\n");
+}
+
+async function writePythonCrossDirFixture(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(path.join(fixtureRoot, "src"), { recursive: true });
+  await mkdir(path.join(fixtureRoot, "scripts"), { recursive: true });
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - python\n",
+  );
+
+  // Source file that defines the exported symbol
+  await writeFile(path.join(fixtureRoot, "src", "utils.py"), [
+    "def validate(data: str) -> bool:",
+    "    return len(data) > 0",
+    "",
+  ].join("\n") + "\n");
+
+  // File in a subdirectory that imports from a parent directory
+  await writeFile(path.join(fixtureRoot, "scripts", "test.py"), [
+    "from ..src.utils import validate",
+    "",
+    "def check(data: str) -> bool:",
+    "    return validate(data)",
+    "",
+  ].join("\n") + "\n");
+}
+
 // -- main ------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -786,6 +900,9 @@ async function run(): Promise<void> {
 
   console.log("\n=== get_document_overview with aliases (Issue #16) ===");
   await testGetDocumentOverviewWithAliases();
+
+  console.log("\n=== get_document_overview cross-dir import (Issue #19) ===");
+  await testGetDocumentOverviewCrossDir();
 
   console.log(`\nPASS jsonl regression: ${fixtureRoot}`);
 }
