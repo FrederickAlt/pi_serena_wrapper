@@ -14,7 +14,7 @@ if str(_BRIDGE_DIR) not in sys.path:
 import pytest
 
 from solidlsp.ls_types import UnifiedSymbolInformation, SymbolKind
-from name_path import compute_name_path, NamePathMatcher, resolve_unique_symbol, SymbolResolutionError
+from name_path import compute_name_path, NamePathMatcher, resolve_unique_symbol, resolve_unique_symbol_via_workspace, SymbolResolutionError
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +311,124 @@ class TestResolveUniqueSymbol:
         ls = MockLS()
         resolve_unique_symbol(ls, "shutdown", relative_path="src/")  # type: ignore[arg-type]
         assert received_paths == ["src/"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_unique_symbol_via_workspace
+# ---------------------------------------------------------------------------
+
+
+class TestResolveUniqueSymbolViaWorkspace:
+    """Test resolve_unique_symbol_via_workspace with mocked LS methods.
+
+    Verifies that the function falls back to resolve_unique_symbol when
+    workspace/symbol returns an empty list (the Bug 1 scenario), not just
+    when it returns None or raises.
+    """
+
+    def test_falls_back_on_empty_workspace_symbol(self):
+        """When workspace/symbol returns [], fall back to full tree."""
+        # Build a minimal full tree: a nested arrow-like function 'execute'
+        # inside a 'config' object — the kind of symbol that workspace/symbol
+        # might not index but the full document symbol tree has.
+        file1 = _make_symbol("config", kind=SymbolKind.File)
+        config_var = _make_symbol(
+            "config",
+            kind=SymbolKind.Variable,
+            parent=file1,
+            children=[
+                _make_symbol(
+                    "execute",
+                    kind=SymbolKind.Function,
+                    location={
+                        "relativePath": "src/config.ts",
+                        "range": {
+                            "start": {"line": 2, "character": 0},
+                            "end": {"line": 4, "character": 0},
+                        },
+                    },
+                )
+            ],
+        )
+        file1["children"] = [config_var]
+        tree = [file1]
+
+        full_tree_called = [False]
+
+        class MockLS:
+            @staticmethod
+            def request_workspace_symbol(query):
+                return []  # Empty — the Bug 1 trigger
+
+            @staticmethod
+            def request_full_symbol_tree(within_relative_path=None):
+                full_tree_called[0] = True
+                return tree
+
+        ls = MockLS()
+        result = resolve_unique_symbol_via_workspace(
+            [ls], "execute", relative_path=None  # type: ignore[arg-type]
+        )
+        assert result["name"] == "execute"
+        assert result["kind"] == SymbolKind.Function
+        assert full_tree_called[0], "Full tree fallback should have been called when workspace/symbol returned []"
+
+    def test_still_works_when_workspace_symbol_returns_none(self):
+        """When workspace/symbol returns None (unsupported), fall back to full tree."""
+        file1 = _make_symbol("mod", kind=SymbolKind.File)
+        fn = _make_symbol(
+            "helper",
+            kind=SymbolKind.Function,
+            parent=file1,
+            location={
+                "relativePath": "src/mod.ts",
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 3, "character": 0},
+                },
+            },
+        )
+        file1["children"] = [fn]
+        tree = [file1]
+
+        full_tree_called = [False]
+
+        class MockLS:
+            @staticmethod
+            def request_workspace_symbol(query):
+                return None  # Unsupported
+
+            @staticmethod
+            def request_full_symbol_tree(within_relative_path=None):
+                full_tree_called[0] = True
+                return tree
+
+        ls = MockLS()
+        result = resolve_unique_symbol_via_workspace(
+            [ls], "helper", relative_path=None  # type: ignore[arg-type]
+        )
+        assert result["name"] == "helper"
+        assert full_tree_called[0], "Full tree fallback should have been called when workspace/symbol returned None"
+
+    def test_raises_when_no_match_in_either(self):
+        """When neither workspace/symbol nor full tree find the symbol, raise error."""
+        empty_tree: list[UnifiedSymbolInformation] = []
+
+        class MockLS:
+            @staticmethod
+            def request_workspace_symbol(query):
+                return []
+
+            @staticmethod
+            def request_full_symbol_tree(within_relative_path=None):
+                return empty_tree
+
+        ls = MockLS()
+        with pytest.raises(SymbolResolutionError) as exc_info:
+            resolve_unique_symbol_via_workspace(
+                [ls], "nonexistent", relative_path=None  # type: ignore[arg-type]
+            )
+        assert "No symbol matches" in str(exc_info.value)
 
 
 if __name__ == "__main__":

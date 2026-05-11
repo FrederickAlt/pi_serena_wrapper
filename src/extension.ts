@@ -68,6 +68,7 @@ export default function (pi: ExtensionAPI) {
       "The Symbols section shows each locally-defined symbol with Kind Name:startLine-endLine, 2-space indented by nesting.",
       "Imported bindings are excluded from the Symbols section.",
       "Use depth to control nesting (0 = top-level only, 1 = one level of children, etc.). Default 0.",
+      "The default kinds filter excludes noisy leaf kinds (Property, Field, Variable, File, Package, String, Number, Boolean, Array, Object, Key, Null, Operator, Unknown). Override with kinds to include them or narrow further.",
       "For languages without import parser support (non-TS/Python), the Imports section is omitted but Symbols still work.",
     ],
     execute: async (toolCallId, params, signal) => {

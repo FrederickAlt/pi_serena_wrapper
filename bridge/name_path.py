@@ -351,6 +351,12 @@ def resolve_unique_symbol_via_workspace(
             continue
 
         if not candidates_raw:
+            # Empty list means workspace/symbol returned no results for this
+            # query, but the symbol may still be in the full tree.  Fall back
+            # to resolve_unique_symbol so it can find it.
+            _merge_fallback_candidates(
+                candidates, ls, name_path, relative_path, exclude_dot_paths
+            )
             continue
 
         for raw_sym in candidates_raw:

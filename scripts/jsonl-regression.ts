@@ -793,7 +793,7 @@ async function testGetDocumentOverviewWithAliases(): Promise<void> {
   assert(tsOverview.includes("formatDate"), "Should include formatDate");
 
   // Internal resolution: should resolve validate to utils.ts
-  assert(/\[internal → .*utils\.ts:\d+-\d+\]/.test(tsOverview),
+  assert(/\[internal → .*utils\.ts:\d+-\d+(&\d+-\d+)*\]/.test(tsOverview),
     "Aliased internal import should resolve to utils.ts");
 
   // Symbols section: 'val' should NOT appear (it's the alias/binding)
@@ -832,7 +832,7 @@ async function testGetDocumentOverviewWithAliases(): Promise<void> {
   assert(pyOverview.includes("format_date"), "Should include format_date");
 
   // Internal resolution: should resolve validate to utils.py
-  assert(/\[internal → .*utils\.py:\d+-\d+\]/.test(pyOverview),
+  assert(/\[internal → .*utils\.py:\d+-\d+(&\d+-\d+)*\]/.test(pyOverview),
     "Aliased internal import should resolve to utils.py");
 
   // Symbols section: 'val' should NOT appear
@@ -1300,6 +1300,162 @@ async function testImportClassificationNameCollision(): Promise<void> {
   await client.shutdown();
 }
 
+// -- Bug 1 fixture: nested arrow function in object literal ---------------
+
+async function writeBug1NestedSymbolFixture(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(path.join(fixtureRoot, "src"), { recursive: true });
+  await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ type: "module" }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "tsconfig.json"), JSON.stringify({
+    compilerOptions: { target: "ES2020", module: "ESNext", moduleResolution: "Node", strict: true },
+    include: ["src/**/*.ts"],
+  }, null, 2) + "\n");
+
+  // Symbol 'execute' is nested inside an object literal — LSPs may index it
+  // in the full document symbol tree but not in workspace/symbol results.
+  await writeFile(path.join(fixtureRoot, "src", "index.ts"), [
+    "export const config = {",
+    "  execute: (data: string): void => {",
+    "    console.log(data);",
+    "  },",
+    "};",
+    "",
+  ].join("\n") + "\n");
+}
+
+// -- Bug 2/3 fixture: same import names in two different files ------------
+
+async function writeBug2ImportConsistencyFixture(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(path.join(fixtureRoot, "src"), { recursive: true });
+  await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ type: "module" }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "tsconfig.json"), JSON.stringify({
+    compilerOptions: { target: "ES2020", module: "ESNext", moduleResolution: "Node", strict: true },
+    include: ["src/**/*.ts"],
+  }, null, 2) + "\n");
+
+  // Internal module with two exported names
+  await writeFile(path.join(fixtureRoot, "src", "lib.ts"), [
+    "export class Alpha {}",
+    "export class Beta {}",
+    "",
+  ].join("\n") + "\n");
+
+  // File A imports both names
+  await writeFile(path.join(fixtureRoot, "src", "fileA.ts"), [
+    "import { Alpha, Beta } from './lib';",
+    "",
+    "export function useAlpha(): Alpha { return new Alpha(); }",
+    "",
+  ].join("\n") + "\n");
+
+  // File B imports the same two names
+  await writeFile(path.join(fixtureRoot, "src", "fileB.ts"), [
+    "import { Alpha, Beta } from './lib';",
+    "",
+    "export function useBeta(): Beta { return new Beta(); }",
+    "",
+  ].join("\n") + "\n");
+}
+
+// -- Bug 1 test: resolve nested symbol via get_type ----------------------
+
+async function testBug1FallbackOnEmptyWorkspaceSymbol(): Promise<void> {
+  await writeBug1NestedSymbolFixture();
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - typescript\n",
+  );
+  const initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
+  console.log(`Bug 1 init OK: language=${initResult.language}`);
+
+  await new Promise(r => setTimeout(r, 4000));
+
+  // First verify the symbol exists via find_symbol (full tree)
+  const fsResult = await client.callTool("find_symbol", {
+    name_path: "execute",
+    relative_path: "src",
+  }) as Array<{ name_path: string; kind: string; location: string }>;
+  const found = fsResult.filter(s => s.name_path !== "--truncated--");
+  assert(found.length >= 1, `find_symbol should find 'execute' in full tree, got ${found.length}`);
+  console.log(`find_symbol found 'execute': ${JSON.stringify(found)}`);
+
+  // Now try get_type — before the Bug 1 fix, if workspace/symbol returned
+  // [] for 'execute', resolve_unique_symbol_via_workspace would skip
+  // fallback and raise "No symbol matches".  After the fix, it falls back
+  // to the full tree and resolves successfully.
+  const typeResult = await client.callTool("get_type", {
+    name_path: "execute",
+    relative_path: "src",
+  }) as Record<string, unknown>;
+  console.log(`get_type('execute'): ${JSON.stringify(typeResult)}`);
+  assert(typeof typeResult.name_path === "string", "get_type should resolve 'execute'");
+  assert(typeResult.name_path.includes("execute"), `Expected name_path to include 'execute', got ${typeResult.name_path}`);
+  console.log("  => Bug 1 fallback on empty workspace/symbol OK");
+
+  await client.shutdown();
+}
+
+// -- Bug 2/3 test: consistent import classification + file-path display --
+
+async function testBug2ImportConsistency(): Promise<void> {
+  await writeBug2ImportConsistencyFixture();
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - typescript\n",
+  );
+  const initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
+  console.log(`Bug 2 init OK: language=${initResult.language}`);
+
+  await new Promise(r => setTimeout(r, 4000));
+
+  // Get overviews for both files
+  const overviewA = await client.callTool("get_document_overview", {
+    relative_path: "src/fileA.ts",
+    depth: 0,
+  }) as string;
+  const overviewB = await client.callTool("get_document_overview", {
+    relative_path: "src/fileB.ts",
+    depth: 0,
+  }) as string;
+
+  console.log("Bug 2 overview A:\n" + overviewA);
+  console.log("Bug 2 overview B:\n" + overviewB);
+
+  // Bug 2: Both files import the same names from the same module.
+  // Both should get [internal] classification, not [external].
+  assert(/\[internal/.test(overviewA), "fileA should classify ./lib as [internal]");
+  assert(/\[internal/.test(overviewB), "fileB should classify ./lib as [internal]");
+  assert(!/\[external\]/.test(overviewA), "fileA should NOT have [external] for ./lib");
+  assert(!/\[external\]/.test(overviewB), "fileB should NOT have [external] for ./lib");
+
+  // Bug 3: The [internal → ...] display should show ALL resolved name
+  // ranges joined with &.  For two names at different positions:
+  //   [internal → src/lib.ts:1-1&2-2]
+  const internalPattern = /\[internal → ([^\]]+)\]/;
+  const matchA = overviewA.match(internalPattern);
+  assert(matchA, "fileA should have [internal → path]");
+  const resolvedPathA = matchA[1];
+  // Should contain the file path, a colon, and range(s) joined by &
+  assert(resolvedPathA.includes(":"), `Bug 3: should include colon+range, got "${resolvedPathA}"`);
+  assert(resolvedPathA.includes("&"), `Bug 3: multi-name import should have &-joined ranges, got "${resolvedPathA}"`);
+  assert(resolvedPathA.startsWith("src/lib.ts:"), `Bug 3: should resolve to src/lib.ts, got "${resolvedPathA}"`);
+
+  const matchB = overviewB.match(internalPattern);
+  assert(matchB, "fileB should have [internal → path]");
+  const resolvedPathB = matchB[1];
+  assert(resolvedPathB.includes(":"), `Bug 3: should include colon+range, got "${resolvedPathB}"`);
+  assert(resolvedPathB.includes("&"), `Bug 3: multi-name import should have &-joined ranges, got "${resolvedPathB}"`);
+  assert(resolvedPathB.startsWith("src/lib.ts:"), `Bug 3: should resolve to src/lib.ts, got "${resolvedPathB}"`);
+
+  console.log("  => Bug 2 consistent import classification OK");
+  console.log("  => Bug 3 import location shows &-joined ranges for all names OK");
+
+  await client.shutdown();
+}
+
 // -- main ------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -1340,6 +1496,12 @@ async function run(): Promise<void> {
 
   console.log("\n=== import classification name collision (Issue #24) ===");
   await testImportClassificationNameCollision();
+
+  console.log("\n=== Bug 1: fallback on empty workspace/symbol ===");
+  await testBug1FallbackOnEmptyWorkspaceSymbol();
+
+  console.log("\n=== Bug 2+3: consistent import classification + file-path display ===");
+  await testBug2ImportConsistency();
 
   console.log(`\nPASS jsonl regression: ${fixtureRoot}`);
 }

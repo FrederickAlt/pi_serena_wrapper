@@ -51,6 +51,27 @@ from import_parser import parse_imports
 
 PACKAGE_ROOT = _BRIDGE_DIR.parent
 
+# ---------------------------------------------------------------------------
+# Default kind filter for get_document_overview — structural kinds only.
+# See ADR comment in the method docstring for reasoning.
+# ---------------------------------------------------------------------------
+
+DEFAULT_DOCUMENT_OVERVIEW_KINDS: frozenset[int] = frozenset({
+    SymbolKind.Module,        # 2
+    SymbolKind.Namespace,     # 3
+    SymbolKind.Class,         # 5
+    SymbolKind.Method,        # 6
+    SymbolKind.Constructor,   # 9
+    SymbolKind.Enum,          # 10
+    SymbolKind.Interface,     # 11
+    SymbolKind.Function,      # 12
+    SymbolKind.Constant,      # 14
+    SymbolKind.EnumMember,    # 22
+    SymbolKind.Struct,        # 23
+    SymbolKind.Event,         # 24
+    SymbolKind.TypeParameter, # 26
+})
+
 
 def _resolve_python_module(file_dir: str, module: str) -> str:
     """Resolve a Python-style relative module specifier to a filesystem path.
@@ -110,6 +131,7 @@ class Bridge:
         self._languages: list[str] = []
         self._ls_map: dict[str, SolidLanguageServer] = {}
         self.exclude_dot_paths: bool = True
+        self._overview_kinds: frozenset[int] = DEFAULT_DOCUMENT_OVERVIEW_KINDS
         # Cache the tool contracts for validation
         self._tool_contracts: dict[str, object] | None = None
 
@@ -136,6 +158,9 @@ class Bridge:
             )
 
         self._languages = list(languages)
+
+        # Parse document_overview_default_kinds from config (or use hardcoded default)
+        self._overview_kinds = self._read_document_overview_kinds(project_root)
 
         settings = SolidLSPSettings(
             solidlsp_dir=str(Path.home() / ".solidlsp"),
@@ -167,6 +192,9 @@ class Bridge:
             "language": self.language,
             "languages": [str(Language(l)) for l in languages],
             "exclude_dot_paths": self.exclude_dot_paths,
+            "document_overview_default_kinds": sorted(
+                SymbolKind(k).name for k in sorted(self._overview_kinds)
+            ),
             "cwd": project_root,
         }
 
@@ -267,16 +295,7 @@ class Bridge:
         kinds: list[int] | None = None
         raw_kinds = params.get("kinds")
         if raw_kinds is not None and isinstance(raw_kinds, list):
-            # Accept SymbolKind names (strings) and convert to integers for filtering.
-            kinds = []
-            for k in raw_kinds:
-                if isinstance(k, str):
-                    try:
-                        kinds.append(SymbolKind[k].value)
-                    except KeyError:
-                        raise ValueError(f"Unknown SymbolKind name: {k!r}")
-                else:
-                    kinds.append(int(k))
+            kinds = list(Bridge._parse_kinds(raw_kinds))  # type: ignore[arg-type]
         max_matches = int(params.get("max_matches", 10))
 
         matcher = NamePathMatcher(name_path_str)
@@ -707,12 +726,21 @@ class Bridge:
 
         Section 2 — "## Symbols": locally-defined symbols with
         ``Kind Name:startLine-endLine`` and 2-space indentation,
-        filtered to exclude imported bindings.
+        filtered to exclude imported bindings and (by default) noisy
+        leaf-data kinds (Property, Field, String, Number, Boolean,
+        Array, Object, Key, Null, Operator, Unknown).
 
         Dispatches to the correct language server based on file extension.
         """
         relative_path = str(params["relative_path"])
         depth = int(params.get("depth", 0))
+
+        # Parse kinds — default from config (or tool param override)
+        raw_kinds = params.get("kinds")
+        if raw_kinds is not None and isinstance(raw_kinds, list):
+            included_kinds = Bridge._parse_kinds(raw_kinds)
+        else:
+            included_kinds = set(self._overview_kinds)
 
         assert self.cwd is not None
 
@@ -744,8 +772,10 @@ class Bridge:
             doc_symbols.root_symbols, imported_names
         )
 
-        # Format symbols with line ranges and depth
-        symbols_text = self._format_overview_symbols(filtered_root_symbols, depth, 0)
+        # Format symbols with line ranges, depth, and kind filter
+        symbols_text = self._format_overview_symbols(
+            filtered_root_symbols, depth, 0, included_kinds
+        )
         sections.append("## Symbols")
         sections.append(symbols_text)
 
@@ -826,8 +856,10 @@ class Bridge:
     ) -> str | None:
         """Try to resolve imported names to a definition location.
 
-        Returns ``"rel/path:start-end"`` on first successful resolution,
-        or ``None`` if all names fail to resolve.
+        Resolves **every** name in *names* and returns a location string of
+        the form ``"rel/path:start-end&start-end..."`` — one range per
+        resolved name, joined with ``&``.  Returns ``None`` if no name
+        resolves successfully.
 
         For relative module specifiers (starting with ``.``), the search
         scope is computed by resolving *module* against the file's parent
@@ -855,6 +887,7 @@ class Bridge:
             # or None (project-wide) when file is in the project root.
             scope_dir = raw_dir or None
 
+        ranges: list[tuple[str, int, int]] = []
         for name in names:
             try:
                 symbol = resolve_unique_symbol_via_workspace(
@@ -870,9 +903,16 @@ class Bridge:
             end = rng.get("end", {}).get("line", 0) + 1
 
             if rel_path:
-                return f"{rel_path}:{start}-{end}"
+                ranges.append((rel_path, start, end))
 
-        return None
+        if not ranges:
+            return None
+
+        # Build location string: file:range&range&...
+        # All resolved names should be in the same file (same module).
+        base_path = ranges[0][0]
+        range_strs = [f"{s}-{e}" for _, s, e in ranges]
+        return f"{base_path}:{'&'.join(range_strs)}"
 
     @staticmethod
     def _verify_module_file_match(location: str, module: str) -> bool:
@@ -880,7 +920,7 @@ class Bridge:
         imported *module* rather than being an unrelated internal name
         collision.
 
-        *location* is ``"rel/path:start-end"`` as returned by
+        *location* is ``"rel/path:start-end&start-end..."`` as returned by
         :meth:`_resolve_import_location`.
         *module* is the source module specifier from the import statement
         (e.g. ``"tree_sitter"``, ``"solidlsp.ls_config"``).
@@ -991,15 +1031,43 @@ class Bridge:
         return ls_instance
 
     @staticmethod
+    def _parse_kinds(raw_kinds: list[object] | None) -> set[int] | None:
+        """Parse a kinds list (LSP SymbolKind names or integers) into a set of ints.
+
+        Returns ``None`` when *raw_kinds* is ``None`` (meaning "no filter").
+        Raises ``ValueError`` for unknown kind names.
+        """
+        if raw_kinds is None:
+            return None
+        result: set[int] = set()
+        for k in raw_kinds:
+            if isinstance(k, str):
+                try:
+                    result.add(SymbolKind[k].value)
+                except KeyError:
+                    raise ValueError(f"Unknown SymbolKind name: {k!r}")
+            else:
+                result.add(int(k))
+        return result
+
+    @staticmethod
     def _format_overview_symbols(
         symbols: list[UnifiedSymbolInformation],
         max_depth: int,
         current_depth: int,
+        included_kinds: set[int] | None = None,
     ) -> str:
-        """Format symbols as ``Kind Name:startLine-endLine`` with 2-space indent."""
+        """Format symbols as ``Kind Name:startLine-endLine`` with 2-space indent.
+
+        When *included_kinds* is given, only symbols whose kind is in the set
+        are included.  Excluding a symbol also excludes its children subtree.
+        """
         lines: list[str] = []
         indent = "  " * current_depth
         for sym in symbols:
+            if included_kinds is not None and sym["kind"] not in included_kinds:
+                continue
+
             kind_name = SymbolKind(sym["kind"]).name
             name = sym["name"]
 
@@ -1015,7 +1083,7 @@ class Bridge:
                 if children:
                     lines.append(
                         Bridge._format_overview_symbols(
-                            children, max_depth, current_depth + 1
+                            children, max_depth, current_depth + 1, included_kinds
                         )
                     )
         return "\n".join(lines)
@@ -1152,6 +1220,40 @@ class Bridge:
         return result
 
     @staticmethod
+    def _read_document_overview_kinds(project_root: str) -> frozenset[int]:
+        """Read ``document_overview_default_kinds`` from ``.serenaproject.yml``.
+
+        Returns the hardcoded ``DEFAULT_DOCUMENT_OVERVIEW_KINDS`` if the key
+        is absent or the config file does not exist.
+        """
+        config_path = Path(project_root) / ".serenaproject.yml"
+        if not config_path.is_file():
+            return DEFAULT_DOCUMENT_OVERVIEW_KINDS
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                cfg: object = yaml.safe_load(f)
+        except yaml.YAMLError:
+            return DEFAULT_DOCUMENT_OVERVIEW_KINDS
+        if not isinstance(cfg, dict):
+            return DEFAULT_DOCUMENT_OVERVIEW_KINDS
+        raw: list[str] | None = cfg.get("document_overview_default_kinds")
+        if not raw or not isinstance(raw, list):
+            return DEFAULT_DOCUMENT_OVERVIEW_KINDS
+        # Validate and convert
+        result: set[int] = set()
+        for name in raw:
+            if not isinstance(name, str):
+                continue
+            try:
+                result.add(SymbolKind[name].value)
+            except KeyError:
+                raise ValueError(
+                    f"Unknown SymbolKind name in .serenaproject.yml "
+                    f"document_overview_default_kinds: {name!r}"
+                ) from None
+        return frozenset(result) if result else DEFAULT_DOCUMENT_OVERVIEW_KINDS
+
+    @staticmethod
     def _read_exclude_dot_paths(project_root: str) -> bool:
         """Read ``exclude_dot_paths`` from ``.serenaproject.yml``.  Defaults to ``True``."""
         config_path = Path(project_root) / ".serenaproject.yml"
@@ -1205,8 +1307,18 @@ class Bridge:
         config_path = Path(project_root) / ".serenaproject.yml"
         if config_path.is_file():
             return  # already exists
+        default_kind_names = sorted(
+            SymbolKind(k).name for k in sorted(DEFAULT_DOCUMENT_OVERVIEW_KINDS)
+        )
         with open(config_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump({"languages": languages}, f, default_flow_style=False)
+            yaml.safe_dump(
+                {
+                    "languages": languages,
+                    "document_overview_default_kinds": default_kind_names,
+                },
+                f,
+                default_flow_style=False,
+            )
 
     def _language_for_file(self, relative_path: str) -> str:
         """Return the language identifier for *relative_path* based on extension.
