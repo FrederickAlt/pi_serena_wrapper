@@ -772,22 +772,24 @@ class Bridge:
         assert self.ls is not None
 
         # Compute the search scope based on the module specifier
-        file_dir = os.path.dirname(file_relative_path) or "."
+        raw_dir = os.path.dirname(file_relative_path)  # empty string for root files
         if module.startswith("."):
             # Relative import — resolve against the file's parent directory.
             # Two styles:
             #   TS  — "../src/foo"  (slashes, os.path handles natively)
             #   Py  — "..src.utils"  (dots as module separator)
+            base_dir = raw_dir or "."
             if "/" in module:
                 # TypeScript-style: slashes act as path separators
-                resolved = os.path.normpath(os.path.join(file_dir, module))
+                resolved = os.path.normpath(os.path.join(base_dir, module))
             else:
                 # Python-style: leading dots = depth, rest uses "." as separator
-                resolved = _resolve_python_module(file_dir, module)
+                resolved = _resolve_python_module(base_dir, module)
             scope_dir = os.path.dirname(resolved) or None
         else:
-            # Non-relative import — scope to the file's own directory
-            scope_dir = file_dir or None
+            # Non-relative import — scope to the file's own directory,
+            # or None (project-wide) when file is in the project root.
+            scope_dir = raw_dir or None
 
         for name in names:
             try:
