@@ -320,12 +320,10 @@ class Bridge:
             matched = [s for s in matched if s["kind"] in kinds_set]
 
         # 5. Cap at max_matches (-1 = unlimited)
-        if max_matches == -1:
-            truncated = False
-        else:
-            truncated = len(matched) > max_matches
-            if truncated:
-                matched = matched[:max_matches]
+        truncated = False
+        if max_matches != -1 and len(matched) > max_matches:
+            truncated = True
+            matched = matched[:max_matches]
 
         # 6. Format output
         result_symbols: list[dict[str, object]] = []
@@ -339,10 +337,14 @@ class Bridge:
                 "location": loc_str,
             })
 
-        return {
-            "symbols": result_symbols,
-            "truncated": truncated,
-        }
+        if truncated:
+            result_symbols.append({
+                "name_path": "--truncated--",
+                "kind": "None",
+                "location": "None",
+            })
+
+        return result_symbols
 
     # -- get_type tool -----------------------------------------------------
 
@@ -444,7 +446,7 @@ class Bridge:
             # Use the LS for the reference's file
             ref_file_ls = self._ls_for_file(ref_rel)
             # Try to get the symbol at the reference location for richer info
-            sym = ref_file_ls._request_symbol_at_location(ref_rel, ref_line, ref_col)
+            sym = ref_file_ls.request_symbol_at_location(ref_rel, ref_line, ref_col)
             if sym is not None:
                 try:
                     np = compute_name_path(sym)
@@ -602,13 +604,9 @@ class Bridge:
         relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
         ls_list = self._ls_list_for(relative_path)
-        try:
-            symbol = resolve_unique_symbol_via_workspace(
-                ls_list, name_path, relative_path, exclude_dot_paths=self.exclude_dot_paths
-            )
-        except SymbolResolutionError as exc:
-            candidates_json = json.dumps(exc.candidates, ensure_ascii=False, default=str)
-            return f"Error: {exc} Candidates: {candidates_json}"
+        symbol = resolve_unique_symbol_via_workspace(
+            ls_list, name_path, relative_path, exclude_dot_paths=self.exclude_dot_paths
+        )
 
         # Extract position: prefer selectionRange, fall back to range
         sel_range = symbol.get("selectionRange") or symbol.get("range")
@@ -737,8 +735,13 @@ class Bridge:
 
         lines: list[str] = []
         for module, name_pairs in sorted(by_module.items()):
+            seen: set[str] = set()
             display_names: list[str] = []
             for original, binding in name_pairs:
+                key = (original, binding)
+                if key in seen:
+                    continue
+                seen.add(key)
                 if original == binding:
                     display_names.append(original)
                 else:
@@ -901,40 +904,11 @@ class Bridge:
         # 3. Store in the server map.
         self._ls_map[lang_str] = ls_instance
 
-        # 4. Append to .serenaproject.yml so next init starts it eagerly.
-        self._append_language_to_config(lang_str)
+        # 4. Track the language in memory (no config mutation — queries are read-only).
         if lang_str not in self._languages:
             self._languages.append(lang_str)
 
         return ls_instance
-
-    def _append_language_to_config(self, language: str) -> None:
-        """Append *language* to the languages list in ``.serenaproject.yml``.
-
-        Creates the file if it doesn't exist.  No-op if *language* is already
-        listed.
-        """
-        assert self.cwd is not None
-        config_path = Path(self.cwd) / ".serenaproject.yml"
-
-        if config_path.is_file():
-            with open(config_path, encoding="utf-8") as f:
-                cfg: object = yaml.safe_load(f)
-            if not isinstance(cfg, dict):
-                cfg = {}
-            languages: list[str] = list(cfg.get("languages", []) or [])
-        else:
-            cfg = {}
-            languages = []
-
-        if language in languages:
-            return
-
-        languages.append(language)
-        cfg["languages"] = languages
-
-        with open(config_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(cfg, f, default_flow_style=False)
 
     @staticmethod
     def _format_overview_symbols(

@@ -19,9 +19,15 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-interface FindSymbolResult {
-  symbols: Array<{ name_path: string; kind: string; location: string }>;
-  truncated: boolean;
+type SymbolEntry = { name_path: string; kind: string; location: string };
+type FindSymbolResult = SymbolEntry[];
+
+function stripSentinel(symbols: FindSymbolResult): SymbolEntry[] {
+  return symbols.filter(s => s.name_path !== "--truncated--");
+}
+
+function isTruncated(symbols: FindSymbolResult): boolean {
+  return symbols.some(s => s.name_path === "--truncated--");
 }
 
 // -- fixtures --------------------------------------------------------------
@@ -69,6 +75,10 @@ async function writeRichTypeScriptFixture(): Promise<void> {
     "export class AnotherClass {",
     "  process(data: string): string {",
     "    return data.toUpperCase();",
+    "  }",
+    "",
+    "  send(data: string): void {",
+    "    console.log(data);",
     "  }",
     "}",
     "",
@@ -293,60 +303,73 @@ async function testFindSymbolBasic(): Promise<void> {
 
   // 1. find_symbol with just name_path
   const result1 = await client.callTool("find_symbol", { name_path: "MyClass" }) as FindSymbolResult;
-  assert(Array.isArray(result1.symbols), "symbols should be an array");
-  assert(result1.symbols.length >= 1, `Expected at least 1 match for MyClass, got ${result1.symbols.length}`);
-  const mc = findSymbol(result1.symbols, "MyClass");
+  assert(Array.isArray(result1), "result should be an array");
+  const syms1 = stripSentinel(result1);
+  assert(syms1.length >= 1, `Expected at least 1 match for MyClass, got ${syms1.length}`);
+  const mc = findSymbol(syms1, "MyClass");
   assert(mc !== undefined, "MyClass should be in results");
   assert(mc.kind === "Class", `MyClass kind should be Class, got ${mc.kind}`);
-  console.log(`find_symbol name_path only OK: ${result1.symbols.length} matches`);
+  console.log(`find_symbol name_path only OK: ${syms1.length} matches`);
 
   // 2. find_symbol for a method (nested name path)
   const result2 = await client.callTool("find_symbol", { name_path: "MyClass/greet" }) as FindSymbolResult;
-  const greet = findSymbol(result2.symbols, "MyClass/greet");
+  const syms2 = stripSentinel(result2);
+  const greet = findSymbol(syms2, "MyClass/greet");
   assert(greet !== undefined, "MyClass/greet should be in results");
   assert(greet.kind === "Method", `MyClass/greet kind should be Method, got ${greet.kind}`);
-  console.log(`find_symbol nested name_path OK: ${result2.symbols.length} matches`);
+  console.log(`find_symbol nested name_path OK: ${syms2.length} matches`);
 
   // 3. find_symbol with just last component (pattern match)
   const result2b = await client.callTool("find_symbol", { name_path: "send" }) as FindSymbolResult;
-  const sendMatch = result2b.symbols.find((s) => s.name_path.endsWith("/send") || s.name_path === "send");
+  const syms2b = stripSentinel(result2b);
+  const sendMatch = syms2b.find((s) => s.name_path.endsWith("/send") || s.name_path === "send");
   assert(sendMatch !== undefined, "send should match MyClass/send via pattern");
-  console.log(`find_symbol single-component pattern OK: ${result2b.symbols.length} matches`);
+  console.log(`find_symbol single-component pattern OK: ${syms2b.length} matches`);
 
   // 4. find_symbol with absolute (leading /) name path
   const result2c = await client.callTool("find_symbol", { name_path: "/MyClass/greet" }) as FindSymbolResult;
-  const exactMatch = findSymbol(result2c.symbols, "MyClass/greet");
+  const syms2c = stripSentinel(result2c);
+  const exactMatch = findSymbol(syms2c, "MyClass/greet");
   assert(exactMatch !== undefined, "/MyClass/greet should exactly match MyClass/greet");
-  console.log(`find_symbol absolute name_path OK: ${result2c.symbols.length} matches`);
+  console.log(`find_symbol absolute name_path OK: ${syms2c.length} matches`);
 
   // 5. find_symbol with relative_path scoped to src/lib
   const result3 = await client.callTool("find_symbol", {
     name_path: "AnotherClass",
     relative_path: "src/lib",
   }) as FindSymbolResult;
-  assert(result3.symbols.length >= 1, `Expected AnotherClass in src/lib, got ${result3.symbols.length}`);
-  const ac = findSymbol(result3.symbols, "AnotherClass");
+  const syms3 = stripSentinel(result3);
+  assert(syms3.length >= 1, `Expected AnotherClass in src/lib, got ${syms3.length}`);
+  const ac = findSymbol(syms3, "AnotherClass");
   assert(ac !== undefined, "AnotherClass should be in scoped results");
-  console.log(`find_symbol with relative_path OK: ${result3.symbols.length} matches`);
+  console.log(`find_symbol with relative_path OK: ${syms3.length} matches`);
 
   // 6. find_symbol with kinds filter
   const result4 = await client.callTool("find_symbol", {
     name_path: "MyClass",
     kinds: [5],  // Class = 5
   }) as FindSymbolResult;
-  assert(result4.symbols.length >= 1, "kinds filter [5] should include MyClass");
-  for (const s of result4.symbols) {
+  const syms4 = stripSentinel(result4);
+  assert(syms4.length >= 1, "kinds filter [5] should include MyClass");
+  for (const s of syms4) {
     assert(s.kind === "Class", `All results should be Class, got ${s.kind}`);
   }
-  console.log(`find_symbol kinds filter OK: ${result4.symbols.length} matches`);
+  console.log(`find_symbol kinds filter OK: ${syms4.length} matches`);
 
-  // 7. find_symbol with max_matches and truncated
+  // 7. find_symbol with max_matches and truncated — search for "send" which
+  //    matches MyClass/send + any other send in the fixture, cap at 1.
   const result5 = await client.callTool("find_symbol", {
-    name_path: "MyClass",
+    name_path: "send",
     max_matches: 1,
   }) as FindSymbolResult;
-  assert(result5.symbols.length === 1, `max_matches=1 should cap at 1, got ${result5.symbols.length}`);
-  console.log(`find_symbol max_matches OK: ${result5.symbols.length} matches, truncated=${result5.truncated}`);
+  assert(isTruncated(result5), "max_matches=1 on multi-match pattern should produce sentinel");
+  const syms5 = stripSentinel(result5);
+  assert(syms5.length === 1, `max_matches=1 should cap to 1 symbol, got ${syms5.length}`);
+  // Verify sentinel is the last entry
+  const last5 = result5[result5.length - 1];
+  assert(last5.name_path === "--truncated--", "sentinel should have name_path '--truncated--'");
+  assert(last5.kind === "None" && last5.location === "None", "sentinel kind/location should be 'None'");
+  console.log(`find_symbol max_matches OK: ${syms5.length} matches, truncated=${isTruncated(result5)}`);
 
   await client.shutdown();
 }
@@ -365,8 +388,8 @@ async function testFindSymbolWithSnippet(): Promise<void> {
     name_path: "MyClass/send",
     code_snippet: "console.log",
   }) as FindSymbolResult;
-  assert(Array.isArray(result6.symbols), "symbols should be an array");
-  console.log(`find_symbol with code_snippet project-wide OK: ${result6.symbols.length} matches`);
+  assert(Array.isArray(result6), "result should be an array");
+  console.log(`find_symbol with code_snippet project-wide OK: ${stripSentinel(result6).length} matches`);
 
   // code_snippet + relative_path
   const result7 = await client.callTool("find_symbol", {
@@ -374,8 +397,8 @@ async function testFindSymbolWithSnippet(): Promise<void> {
     code_snippet: "console.log",
     relative_path: "src",
   }) as FindSymbolResult;
-  assert(Array.isArray(result7.symbols), "symbols should be an array");
-  console.log(`find_symbol with code_snippet + relative_path OK: ${result7.symbols.length} matches`);
+  assert(Array.isArray(result7), "result should be an array");
+  console.log(`find_symbol with code_snippet + relative_path OK: ${stripSentinel(result7).length} matches`);
 
   // code_snippet + kinds
   const result8 = await client.callTool("find_symbol", {
@@ -383,11 +406,12 @@ async function testFindSymbolWithSnippet(): Promise<void> {
     code_snippet: "console.log",
     kinds: [6],  // Method = 6
   }) as FindSymbolResult;
-  assert(Array.isArray(result8.symbols), "symbols should be an array");
-  for (const s of result8.symbols) {
+  assert(Array.isArray(result8), "result should be an array");
+  const syms8 = stripSentinel(result8);
+  for (const s of syms8) {
     assert(s.kind === "Method", `All results should be Method, got ${s.kind}`);
   }
-  console.log(`find_symbol with code_snippet + kinds OK: ${result8.symbols.length} matches`);
+  console.log(`find_symbol with code_snippet + kinds OK: ${syms8.length} matches`);
 
   await client.shutdown();
 }
@@ -402,15 +426,17 @@ async function testFindSymbolOutputFormat(): Promise<void> {
   assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
 
   const result = await client.callTool("find_symbol", { name_path: "MyClass" }) as FindSymbolResult;
-  assert(typeof result.truncated === "boolean", "truncated should be boolean");
-  assert(Array.isArray(result.symbols), "symbols should be an array");
-  for (const sym of result.symbols) {
+  assert(Array.isArray(result), "result should be an array");
+  assert(!isTruncated(result), "should not be truncated for 1-class fixture");
+  const syms = stripSentinel(result);
+  for (const sym of syms) {
     assert(typeof sym.name_path === "string", "name_path should be string");
     assert(typeof sym.kind === "string", "kind should be string");
     assert(typeof sym.location === "string", "location should be string");
     assert(/^.+:\d+-\d+$/.test(sym.location), `location should match path:start-end, got ${sym.location}`);
   }
-  console.log(`find_symbol output format OK: ${result.symbols.length} symbols`);
+  // Verify sentinel format when it does appear (tested separately in max_matches)
+  console.log(`find_symbol output format OK: ${syms.length} symbols`);
 
   await client.shutdown();
 }
@@ -1063,12 +1089,12 @@ async function testLazyLanguageStart(): Promise<void> {
   assert(!pySymbolsSection.includes("validate"), "validate should not be in Symbols");
   console.log("  => Python overview via lazy start OK");
 
-  // Check that .serenaproject.yml was updated to include python
+  // Check that .serenaproject.yml was NOT mutated (lazy start is in-memory only)
   const { readFileSync } = await import("node:fs");
   const configAfter = readFileSync(path.join(fixtureRoot, ".serenaproject.yml"), "utf-8");
-  assert(configAfter.includes("python"), `.serenaproject.yml should now include python:\n${configAfter}`);
+  assert(!configAfter.includes("python"), `.serenaproject.yml should NOT include python (lazy start is read-only):\n${configAfter}`);
   assert(configAfter.includes("typescript"), `.serenaproject.yml should still include typescript:\n${configAfter}`);
-  console.log("  => .serenaproject.yml updated OK");
+  console.log("  => .serenaproject.yml unchanged OK (lazy start is in-memory)");
 
   // Call get_document_overview on the Python file (also uses _ls_for_file)
   const pyOverview2 = await client.callTool("get_document_overview", {
@@ -1081,13 +1107,12 @@ async function testLazyLanguageStart(): Promise<void> {
 
   await client.shutdown();
 
-  // Re-init: both languages should start eagerly now
+  // Re-init: only the originally-configured languages (lazy start is in-memory)
   const initResult2 = await client.init(fixtureRoot) as Record<string, unknown>;
   assert(initResult2.ok === true, `Re-init should succeed: ${JSON.stringify(initResult2)}`);
   const langs2 = initResult2.languages as string[];
-  assert(langs2.length >= 2, `Expected at least 2 languages on re-init, got ${langs2.length}: ${JSON.stringify(langs2)}`);
+  assert(langs2.length === 1, `Expected exactly 1 language on re-init (lazy start is in-memory), got ${langs2.length}: ${JSON.stringify(langs2)}`);
   assert(langs2.includes("typescript"), `Should include typescript: ${JSON.stringify(langs2)}`);
-  assert(langs2.includes("python"), `Should include python: ${JSON.stringify(langs2)}`);
   console.log(`Re-init OK: languages=${JSON.stringify(langs2)}`);
 
   await client.shutdown();

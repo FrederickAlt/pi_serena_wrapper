@@ -130,6 +130,62 @@ class SymbolResolutionError(Exception):
         return f"Symbol resolution error for '{self.name_path}': {super().__str__()}"
 
 
+def _disambiguate(
+    candidates: dict[str, list[UnifiedSymbolInformation]],
+    name_path: str,
+) -> UnifiedSymbolInformation:
+    """Resolve a *candidates* dict (keyed by computed name_path) to a unique symbol.
+
+    Shared by :func:`resolve_unique_symbol` and
+    :func:`resolve_unique_symbol_via_workspace` — both build candidate dicts
+    differently but resolve them the same way.
+
+    Returns the unique symbol on success.  Raises ``SymbolResolutionError``
+    with a candidate list on ambiguity, or with a "no match" message when
+    *candidates* is empty.
+    """
+    from solidlsp.ls_types import SymbolKind
+
+    all_candidates: list[UnifiedSymbolInformation] = []
+    for lst in candidates.values():
+        all_candidates.extend(lst)
+
+    if len(all_candidates) == 1:
+        return all_candidates[0]
+
+    if len(all_candidates) > 1:
+        # Try exact match to break the tie.
+        normalized_pattern = name_path[1:] if name_path.startswith("/") else name_path
+        exact_matches = [s for s in all_candidates if compute_name_path(s) == normalized_pattern]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+
+        # Build a human-readable candidate list
+        candidate_list: list[dict[str, object]] = []
+        for s in all_candidates:
+            location = s.get("location") or {}
+            candidate_list.append({
+                "name_path": compute_name_path(s),
+                "kind": SymbolKind(s.get("kind")).name,
+                "location": (
+                    f"{location.get('relativePath', '')}:"
+                    f"{location.get('range', {}).get('start', {}).get('line', 0)}-"
+                    f"{location.get('range', {}).get('end', {}).get('line', 0)}"
+                ),
+            })
+
+        raise SymbolResolutionError(
+            name_path,
+            f"Ambiguous name_path — {len(all_candidates)} matches. Refine via find_symbol first.",
+            candidates=candidate_list,
+        )
+
+    raise SymbolResolutionError(
+        name_path,
+        f"No symbol matches '{name_path}' in the project.",
+    )
+
+
 def resolve_unique_symbol(
     ls: SolidLanguageServer,
     name_path: str,
@@ -190,45 +246,7 @@ def resolve_unique_symbol(
     for root in tree:
         _collect(root)
 
-    all_candidates: list[UnifiedSymbolInformation] = []
-    for lst in candidates.values():
-        all_candidates.extend(lst)
-
-    if len(all_candidates) == 1:
-        return all_candidates[0]
-
-    if len(all_candidates) > 1:
-        # Try exact match to break the tie.
-        # Strip leading "/" from pattern for comparison (name_paths never have it).
-        normalized_pattern = name_path[1:] if name_path.startswith("/") else name_path
-        exact_matches = [s for s in all_candidates if compute_name_path(s) == normalized_pattern]
-        if len(exact_matches) == 1:
-            return exact_matches[0]
-
-        # Build a human-readable candidate list
-        candidate_list: list[dict[str, object]] = []
-        for s in all_candidates:
-            location = s.get("location") or {}
-            candidate_list.append({
-                "name_path": compute_name_path(s),
-                "kind": SymbolKind(s.get("kind")).name,
-                "location": (
-                    f"{location.get('relativePath', '')}:"
-                    f"{location.get('range', {}).get('start', {}).get('line', 0)}-"
-                    f"{location.get('range', {}).get('end', {}).get('line', 0)}"
-                ),
-            })
-
-        raise SymbolResolutionError(
-            name_path,
-            f"Ambiguous name_path — {len(all_candidates)} matches. Refine via find_symbol first.",
-            candidates=candidate_list,
-        )
-
-    raise SymbolResolutionError(
-        name_path,
-        f"No symbol matches '{name_path}' in the project.",
-    )
+    return _disambiguate(candidates, name_path)
 
 
 # ---------------------------------------------------------------------------
@@ -387,42 +405,4 @@ def resolve_unique_symbol_via_workspace(
             if matcher.matches(computed):
                 candidates.setdefault(computed, []).append(full_sym)
 
-    # Resolve uniqueness — same logic as resolve_unique_symbol
-    all_candidates: list[UnifiedSymbolInformation] = []
-    for lst in candidates.values():
-        all_candidates.extend(lst)
-
-    if len(all_candidates) == 1:
-        return all_candidates[0]
-
-    if len(all_candidates) > 1:
-        # Try exact match to break the tie
-        normalized_pattern = name_path[1:] if name_path.startswith("/") else name_path
-        exact_matches = [s for s in all_candidates if compute_name_path(s) == normalized_pattern]
-        if len(exact_matches) == 1:
-            return exact_matches[0]
-
-        # Build a human-readable candidate list
-        candidate_list: list[dict[str, object]] = []
-        for s in all_candidates:
-            loc = s.get("location") or {}
-            candidate_list.append({
-                "name_path": compute_name_path(s),
-                "kind": SymbolKind(s.get("kind")).name,
-                "location": (
-                    f"{loc.get('relativePath', '')}:"
-                    f"{loc.get('range', {}).get('start', {}).get('line', 0)}-"
-                    f"{loc.get('range', {}).get('end', {}).get('line', 0)}"
-                ),
-            })
-
-        raise SymbolResolutionError(
-            name_path,
-            f"Ambiguous name_path — {len(all_candidates)} matches. Refine via find_symbol first.",
-            candidates=candidate_list,
-        )
-
-    raise SymbolResolutionError(
-        name_path,
-        f"No symbol matches '{name_path}' in the project.",
-    )
+    return _disambiguate(candidates, name_path)

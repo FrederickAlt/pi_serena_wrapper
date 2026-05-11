@@ -30,6 +30,16 @@ The bridge imports SolidLSP from the vendored `bridge/solidlsp/` directory. It d
 
 Language server prerequisites are the responsibility of the user/system environment. The bridge does not install language servers, edit shell startup files, or modify `PATH`.
 
+### Runtime dependencies
+
+The `code_snippet` parameter of `find_symbol` relies on **ripgrep** (`rg`) to scope results by source text. If `rg` is not installed, `find_symbol` calls with `code_snippet` will fail with a `RuntimeError`. Install it via your system package manager:
+
+- Debian/Ubuntu: `sudo apt install ripgrep`
+- macOS: `brew install ripgrep`
+- Arch: `sudo pacman -S ripgrep`
+
+`find_symbol` without `code_snippet` does not require `rg`.
+
 Examples:
 
 - TypeScript projects require `node` and the TypeScript language server (auto-installed by SolidLSP).

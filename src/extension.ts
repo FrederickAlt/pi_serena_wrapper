@@ -42,6 +42,11 @@ export default function (pi: ExtensionAPI) {
     label: "Find Symbol",
     description: toolDescriptions.find_symbol,
     parameters: toolSchemas.find_symbol,
+    promptGuidelines: [
+      "Returns a flat array of symbol entries: {name_path, kind, location}.",
+      "When results are truncated beyond max_matches, a sentinel entry {name_path: '--truncated--', kind: 'None', location: 'None'} is appended.",
+      "Strip or skip this sentinel when processing results. Its presence means more symbols exist than were returned.",
+    ],
     execute: async (_toolCallId, params, signal) => {
       return wrapAmbiguity(() =>
         clientFor().callTool("find_symbol", params as Record<string, unknown>, signal),
