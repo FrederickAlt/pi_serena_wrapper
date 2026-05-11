@@ -47,6 +47,8 @@ from name_path import (
     SymbolResolutionError,
 )
 
+from import_parser import parse_imports
+
 PACKAGE_ROOT = _BRIDGE_DIR.parent
 
 
@@ -61,6 +63,7 @@ class Bridge:
     def __init__(self) -> None:
         self.ls: SolidLanguageServer | None = None
         self.cwd: str | None = None
+        self.language: str | None = None
         # Cache the tool contracts for validation
         self._tool_contracts: dict[str, object] | None = None
 
@@ -97,6 +100,7 @@ class Bridge:
         self.ls = SolidLanguageServer.create(config, project_root, solidlsp_settings=settings)
         self.ls.start()
         self.cwd = project_root
+        self.language = str(lang)
 
         return {"ok": True, "language": str(lang), "cwd": project_root}
 
@@ -136,6 +140,8 @@ class Bridge:
             return self._get_docstring(params)
         elif tool_name == "rename_symbol":
             return self._rename_symbol(params)
+        elif tool_name == "get_document_overview":
+            return self._get_document_overview(params)
         else:
             raise ValueError(f"Tool not implemented: {tool_name}")
 
@@ -566,6 +572,199 @@ class Bridge:
                 abs_file_path.write_text(file_buffer.contents, encoding="utf-8")
 
         return f"renamed {name_path} to {new_name}"
+
+    # -- get_document_overview tool -----------------------------------------
+
+    def _get_document_overview(self, params: dict[str, object]) -> str:
+        """Return a two-section plain-text overview of a source file.
+
+        Section 1 — "## Imports": source modules with imported names,
+        classified as [internal] (project-local, resolved to definition
+        location) or [external] (stdlib/package).
+
+        Section 2 — "## Symbols": locally-defined symbols with
+        ``Kind Name:startLine-endLine`` and 2-space indentation,
+        filtered to exclude imported bindings.
+        """
+        relative_path = str(params["relative_path"])
+        depth = int(params.get("depth", 0))
+
+        assert self.ls is not None
+        assert self.cwd is not None
+
+        # Read the source file
+        abs_path = Path(self.cwd) / relative_path
+        if not abs_path.is_file():
+            raise FileNotFoundError(f"File not found: {relative_path}")
+        source = abs_path.read_text(encoding="utf-8")
+
+        # Parse imports via tree-sitter (returns empty list for unsupported languages)
+        language = self.language or ""
+        import_pairs = parse_imports(source, language)  # [(original, binding, module)]
+
+        # Build output sections
+        sections: list[str] = []
+
+        if import_pairs:
+            imports_section = self._format_imports_section(import_pairs, relative_path)
+            sections.append("## Imports")
+            sections.append(imports_section)
+
+        # Get document symbols and filter out imported names
+        doc_symbols = self.ls.request_document_symbols(relative_path)
+        imported_names: set[str] = {binding for _, binding, _ in import_pairs}
+        filtered_root_symbols = self._filter_imported_symbols(
+            doc_symbols.root_symbols, imported_names
+        )
+
+        # Format symbols with line ranges and depth
+        symbols_text = self._format_overview_symbols(filtered_root_symbols, depth, 0)
+        sections.append("## Symbols")
+        sections.append(symbols_text)
+
+        return "\n".join(sections)
+
+    def _format_imports_section(
+        self,
+        import_pairs: list[tuple[str, str, str]],
+        file_relative_path: str,
+    ) -> str:
+        """Group imports by source module and produce one line per module.
+
+        Displays ``original (as binding)`` only when the two names differ.
+        Resolves via *original_name* (the workspace-known symbol).
+        """
+        by_module: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for original, binding, module in import_pairs:
+            by_module[module].append((original, binding))
+
+        lines: list[str] = []
+        for module, name_pairs in sorted(by_module.items()):
+            display_names: list[str] = []
+            for original, binding in name_pairs:
+                if original == binding:
+                    display_names.append(original)
+                else:
+                    display_names.append(f"{original} (as {binding})")
+            names_str = ", ".join(display_names)
+            # Use original names for workspace resolution
+            original_names = [orig for orig, _ in name_pairs]
+            classification = self._classify_import(module, original_names, file_relative_path)
+            lines.append(f"{module} — {names_str} {classification}")
+
+        return "\n".join(lines)
+
+    def _classify_import(
+        self,
+        module: str,
+        names: list[str],
+        file_relative_path: str,
+    ) -> str:
+        """Classify a source module as internal or external.
+
+        Relative module paths (starting with ``.``) are always internal.
+        Non-relative modules are resolved via workspace symbol search:
+        internal if at least one imported name resolves, external otherwise.
+        """
+        # Relative import — definitely internal
+        if module.startswith("."):
+            location = self._resolve_import_location(names, file_relative_path)
+            if location:
+                return f"[internal → {location}]"
+            return "[internal]"
+
+        # Non-relative — try to resolve names
+        location = self._resolve_import_location(names, file_relative_path)
+        if location:
+            return f"[internal → {location}]"
+        return "[external]"
+
+    def _resolve_import_location(
+        self,
+        names: list[str],
+        file_relative_path: str,
+    ) -> str | None:
+        """Try to resolve imported names to a definition location.
+
+        Returns ``"rel/path:start-end"`` on first successful resolution,
+        or ``None`` if all names fail to resolve.
+        """
+        assert self.ls is not None
+
+        # Scope the search to the directory containing the overviewed file
+        scope_dir = os.path.dirname(file_relative_path) or None
+
+        for name in names:
+            try:
+                symbol = resolve_unique_symbol_via_workspace(
+                    self.ls, name, relative_path=scope_dir
+                )
+            except Exception:
+                continue
+
+            location = symbol.get("location") or {}
+            rel_path = location.get("relativePath")
+            rng = location.get("range") or {}
+            start = rng.get("start", {}).get("line", 0)
+            end = rng.get("end", {}).get("line", 0)
+
+            if rel_path:
+                return f"{rel_path}:{start}-{end}"
+
+        return None
+
+    @staticmethod
+    def _filter_imported_symbols(
+        symbols: list[UnifiedSymbolInformation],
+        imported_names: set[str],
+    ) -> list[UnifiedSymbolInformation]:
+        """Recursively filter symbols whose names appear in *imported_names*.
+
+        Returns a new list — does not mutate the input.
+        """
+        result: list[UnifiedSymbolInformation] = []
+        for sym in symbols:
+            if sym.get("name") in imported_names:
+                continue
+            # Copy to avoid mutating the original (only need top-level keys)
+            filtered: dict = {}
+            for k, v in sym.items():
+                if k == "children" and v:
+                    filtered[k] = Bridge._filter_imported_symbols(v, imported_names)
+                else:
+                    filtered[k] = v
+            result.append(filtered)  # type: ignore[arg-type]
+        return result
+
+    @staticmethod
+    def _format_overview_symbols(
+        symbols: list[UnifiedSymbolInformation],
+        max_depth: int,
+        current_depth: int,
+    ) -> str:
+        """Format symbols as ``Kind Name:startLine-endLine`` with 2-space indent."""
+        lines: list[str] = []
+        indent = "  " * current_depth
+        for sym in symbols:
+            kind_name = SymbolKind(sym["kind"]).name
+            name = sym["name"]
+
+            # Get the symbol's body line range (use "range", not "selectionRange")
+            rng = sym.get("range") or {}
+            start_line = rng.get("start", {}).get("line", 0)
+            end_line = rng.get("end", {}).get("line", 0)
+
+            lines.append(f"{indent}{kind_name} {name}:{start_line}-{end_line}")
+
+            if current_depth < max_depth:
+                children = sym.get("children", [])
+                if children:
+                    lines.append(
+                        Bridge._format_overview_symbols(
+                            children, max_depth, current_depth + 1
+                        )
+                    )
+        return "\n".join(lines)
 
     # -- helpers ------------------------------------------------------------
 

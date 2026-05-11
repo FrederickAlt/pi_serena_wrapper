@@ -115,6 +115,88 @@ export function helper(x: number): number {
 `);
 }
 
+async function writeTypeScriptFixtureWithImports(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(path.join(fixtureRoot, "src"), { recursive: true });
+  await mkdir(path.join(fixtureRoot, "src", "lib"), { recursive: true });
+  await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ type: "module" }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "tsconfig.json"), JSON.stringify({
+    compilerOptions: { target: "ES2020", module: "ESNext", moduleResolution: "Node", strict: true },
+    include: ["src/**/*.ts"],
+  }, null, 2) + "\n");
+
+  // Internal module: defines symbols that are imported elsewhere
+  await writeFile(path.join(fixtureRoot, "src", "lib", "utils.ts"), [
+    "export function validate(data: string): boolean {",
+    "  return data.length > 0;",
+    "}",
+    "",
+    "export function formatDate(date: Date): string {",
+    "  return date.toISOString();",
+    "}",
+    "",
+  ].join("\n") + "\n");
+
+  // Main file with imports and local symbols
+  await writeFile(path.join(fixtureRoot, "src", "index.ts"), [
+    "import { validate, formatDate } from './lib/utils';",
+    "import { useState, useEffect } from 'react';",
+    "import something from 'some-lib';",
+    "",
+    "export class UserService {",
+    "  createUser(name: string): void {",
+    "    validate(name);",
+    "  }",
+    "",
+    "  deleteUser(id: number): void {",
+    "    console.log(`deleting ${id}`);",
+    "  }",
+    "}",
+    "",
+    "export function helper(): void {",
+    "  console.log('helper');",
+    "}",
+    "",
+  ].join("\n") + "\n");
+}
+
+async function writePythonFixtureWithImports(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(fixtureRoot, { recursive: true });
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - python\n",
+  );
+
+  // Internal module
+  await writeFile(path.join(fixtureRoot, "utils.py"), [
+    "def validate(data: str) -> bool:",
+    "    return len(data) > 0",
+    "",
+    "def format_date(date_str: str) -> str:",
+    "    return date_str.strip()",
+    "",
+  ].join("\n") + "\n");
+
+  // Main file with imports and local symbols
+  await writeFile(path.join(fixtureRoot, "main.py"), [
+    "from utils import validate, format_date",
+    "import os",
+    "import sys",
+    "",
+    "class UserService:",
+    "    def create_user(self, name: str) -> None:",
+    "        validate(name)",
+    "",
+    "    def delete_user(self, uid: int) -> None:",
+    "        print(f'deleting {uid}')",
+    "",
+    "def helper():",
+    "    print('helper')",
+    "",
+  ].join("\n") + "\n");
+}
+
 // -- helpers ---------------------------------------------------------------
 
 function findSymbol(
@@ -397,6 +479,288 @@ async function testGetType(): Promise<void> {
   await client.shutdown();
 }
 
+async function testGetDocumentOverview(): Promise<void> {
+  // --- TypeScript fixture ---
+  await writeTypeScriptFixtureWithImports();
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - typescript\n",
+  );
+  let initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
+  console.log(`TypeScript init OK: language=${initResult.language}`);
+
+  // Give LSP a moment to index
+  await new Promise(r => setTimeout(r, 3000));
+
+  // --- Call get_document_overview on the main file ---
+  const tsOverview = await client.callTool("get_document_overview", {
+    relative_path: "src/index.ts",
+    depth: 0,
+  }) as string;
+
+  assert(typeof tsOverview === "string", `Expected string, got ${typeof tsOverview}`);
+  console.log("TypeScript get_document_overview output:\n" + tsOverview);
+
+  // Should have both sections
+  assert(tsOverview.includes("## Imports"), "Should have Imports section");
+  assert(tsOverview.includes("## Symbols"), "Should have Symbols section");
+
+  // Imports section: check module grouping
+  assert(tsOverview.includes("./lib/utils"), "Should include internal module path");
+  assert(/\[internal/.test(tsOverview), "Should have [internal] classification");
+  assert(/\[external\]/.test(tsOverview), "Should have [external] classification");
+
+  // Symbols section: check format and local-only
+  const symbolsSection = tsOverview.split("## Symbols")[1] || "";
+  const symbolLines = symbolsSection.trim().split("\n").filter(l => l.trim());
+  assert(symbolLines.length >= 1, "Should have at least one symbol");
+
+  // Each symbol line: Kind Name:start-end (no leading indent at depth=0)
+  for (const line of symbolLines) {
+    // Allow optional indent + Kind + space + Name + : + digits + - + digits
+    assert(/^\s*[A-Z][a-zA-Z]+ \w+:\d+-\d+$/.test(line),
+      `Symbol line should match "Kind Name:start-end": "${line}"`);
+  }
+
+  // Imported names should NOT appear in Symbols section
+  assert(!symbolsSection.includes("validate"), "validate is imported, should not be in Symbols");
+  assert(!symbolsSection.includes("formatDate"), "formatDate is imported, should not be in Symbols");
+  assert(!symbolsSection.includes("useState"), "useState is imported, should not be in Symbols");
+
+  // Local symbols should appear
+  assert(symbolsSection.includes("UserService"), "UserService should be in Symbols");
+  assert(symbolsSection.includes("helper"), "helper should be in Symbols");
+
+  console.log("  => TypeScript overview format OK");
+
+  // --- Test depth=1 ---
+  const tsOverviewDepth1 = await client.callTool("get_document_overview", {
+    relative_path: "src/index.ts",
+    depth: 1,
+  }) as string;
+  const symSectionDepth1 = tsOverviewDepth1.split("## Symbols")[1] || "";
+  assert(symSectionDepth1.includes("createUser"), "depth=1 should include class members");
+  assert(symSectionDepth1.includes("deleteUser"), "depth=1 should include class members");
+  // Class members should be indented
+  assert(
+    symSectionDepth1.split("\n").some(l => l.includes("createUser") && l.startsWith("  ")),
+    "depth=1 class members should have 2-space indent",
+  );
+  console.log("  => TypeScript depth=1 OK");
+
+  await client.shutdown();
+
+  // --- Python fixture ---
+  await writePythonFixtureWithImports();
+  initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Python init should succeed: ${JSON.stringify(initResult)}`);
+  console.log(`Python init OK: language=${initResult.language}`);
+
+  await new Promise(r => setTimeout(r, 3000));
+
+  const pyOverview = await client.callTool("get_document_overview", {
+    relative_path: "main.py",
+    depth: 0,
+  }) as string;
+
+  assert(typeof pyOverview === "string", `Expected string, got ${typeof pyOverview}`);
+  console.log("Python get_document_overview output:\n" + pyOverview);
+
+  assert(pyOverview.includes("## Imports"), "Python should have Imports section");
+  assert(pyOverview.includes("## Symbols"), "Python should have Symbols section");
+  assert(pyOverview.includes("utils"), "Should include internal module 'utils'");
+  assert(/\[internal/.test(pyOverview), "Should have [internal] classification");
+  assert(/\[external\]/.test(pyOverview), "Should have [external] classification");
+
+  const pySymbolsSection = pyOverview.split("## Symbols")[1] || "";
+  const pySymbolLines = pySymbolsSection.trim().split("\n").filter(l => l.trim());
+  assert(pySymbolLines.length >= 1, "Python should have at least one symbol");
+
+  for (const line of pySymbolLines) {
+    assert(/^\s*[A-Z][a-zA-Z]+ \w+:\d+-\d+$/.test(line),
+      `Python symbol line should match format: "${line}"`);
+  }
+
+  // Imported names should NOT appear in Symbols section
+  assert(!pySymbolsSection.includes("validate"), "validate is imported, should not be in Symbols");
+  assert(!pySymbolsSection.includes("format_date"), "format_date is imported, should not be in Symbols");
+
+  // Local symbols should appear
+  assert(pySymbolsSection.includes("UserService"), "UserService should be in Symbols");
+  assert(pySymbolsSection.includes("helper"), "helper should be in Symbols");
+
+  console.log("  => Python overview format OK");
+
+  await client.shutdown();
+}
+
+// -- aliased import fixtures (Issue #16) ------------------------------------
+
+async function writeTypeScriptFixtureWithAliasedImports(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(path.join(fixtureRoot, "src"), { recursive: true });
+  await mkdir(path.join(fixtureRoot, "src", "lib"), { recursive: true });
+  await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ type: "module" }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "tsconfig.json"), JSON.stringify({
+    compilerOptions: { target: "ES2020", module: "ESNext", moduleResolution: "Node", strict: true },
+    include: ["src/**/*.ts"],
+  }, null, 2) + "\n");
+
+  // Internal module: defines symbols that are imported with aliases
+  await writeFile(path.join(fixtureRoot, "src", "lib", "utils.ts"), [
+    "export function validate(data: string): boolean {",
+    "  return data.length > 0;",
+    "}",
+    "",
+    "export function formatDate(date: Date): string {",
+    "  return date.toISOString();",
+    "}",
+    "",
+  ].join("\n") + "\n");
+
+  // Main file with aliased imports and local symbols
+  await writeFile(path.join(fixtureRoot, "src", "index.ts"), [
+    "import { validate as val, formatDate } from './lib/utils';",
+    "import { useState } from 'react';",
+    "import defaultExport from 'some-lib';",
+    "",
+    "export class UserService {",
+    "  check(data: string): boolean {",
+    "    return val(data);",
+    "  }",
+    "",
+    "  process(date: Date): string {",
+    "    return formatDate(date);",
+    "  }",
+    "}",
+    "",
+    "export function helper(): void {",
+    "  console.log('helper');",
+    "}",
+    "",
+  ].join("\n") + "\n");
+}
+
+async function writePythonFixtureWithAliasedImports(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(fixtureRoot, { recursive: true });
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - python\n",
+  );
+
+  // Internal module
+  await writeFile(path.join(fixtureRoot, "utils.py"), [
+    "def validate(data: str) -> bool:",
+    "    return len(data) > 0",
+    "",
+    "def format_date(date_str: str) -> str:",
+    "    return date_str.strip()",
+    "",
+  ].join("\n") + "\n");
+
+  // Main file with aliased imports and local symbols
+  await writeFile(path.join(fixtureRoot, "main.py"), [
+    "from utils import validate as val, format_date",
+    "import os",
+    "",
+    "class UserService:",
+    "    def check(self, data: str) -> bool:",
+    "        return val(data)",
+    "",
+    "    def process(self, date_str: str) -> str:",
+    "        return format_date(date_str)",
+    "",
+    "def helper():",
+    "    print('helper')",
+    "",
+  ].join("\n") + "\n");
+}
+
+async function testGetDocumentOverviewWithAliases(): Promise<void> {
+  // --- TypeScript aliased fixture ---
+  await writeTypeScriptFixtureWithAliasedImports();
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - typescript\n",
+  );
+  let initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `TS alias init should succeed: ${JSON.stringify(initResult)}`);
+
+  await new Promise(r => setTimeout(r, 3000));
+
+  const tsOverview = await client.callTool("get_document_overview", {
+    relative_path: "src/index.ts",
+    depth: 0,
+  }) as string;
+
+  console.log("TS aliased import overview:\n" + tsOverview);
+
+  // Alias display: validate (as val)
+  assert(tsOverview.includes("validate (as val)"), "Should show 'validate (as val)'");
+  // Non-aliased name in same module: formatDate shown normally
+  assert(tsOverview.includes("formatDate"), "Should include formatDate");
+
+  // Internal resolution: should resolve validate to utils.ts
+  assert(/\[internal → .*utils\.ts:\d+-\d+\]/.test(tsOverview),
+    "Aliased internal import should resolve to utils.ts");
+
+  // Symbols section: 'val' should NOT appear (it's the alias/binding)
+  const tsSymbolsSection = tsOverview.split("## Symbols")[1] || "";
+  assert(!tsSymbolsSection.includes("val"), "Alias 'val' should not be in Symbols");
+  assert(!tsSymbolsSection.includes("validate"), "Original 'validate' should not be in Symbols");
+  assert(!tsSymbolsSection.includes("formatDate"), "Imported 'formatDate' should not be in Symbols");
+  assert(!tsSymbolsSection.includes("useState"), "Imported 'useState' should not be in Symbols");
+  assert(!tsSymbolsSection.includes("defaultExport"), "Imported 'defaultExport' should not be in Symbols");
+
+  // Local symbols still present
+  assert(tsSymbolsSection.includes("UserService"), "UserService should be in Symbols");
+  assert(tsSymbolsSection.includes("helper"), "helper should be in Symbols");
+
+  console.log("  => TS aliased import resolution OK");
+
+  await client.shutdown();
+
+  // --- Python aliased fixture ---
+  await writePythonFixtureWithAliasedImports();
+  initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Python alias init should succeed: ${JSON.stringify(initResult)}`);
+
+  await new Promise(r => setTimeout(r, 3000));
+
+  const pyOverview = await client.callTool("get_document_overview", {
+    relative_path: "main.py",
+    depth: 0,
+  }) as string;
+
+  console.log("Python aliased import overview:\n" + pyOverview);
+
+  // Alias display: validate (as val)
+  assert(pyOverview.includes("validate (as val)"), "Should show 'validate (as val)'");
+  // Non-aliased name: format_date shown normally
+  assert(pyOverview.includes("format_date"), "Should include format_date");
+
+  // Internal resolution: should resolve validate to utils.py
+  assert(/\[internal → .*utils\.py:\d+-\d+\]/.test(pyOverview),
+    "Aliased internal import should resolve to utils.py");
+
+  // Symbols section: 'val' should NOT appear
+  const pySymbolsSection = pyOverview.split("## Symbols")[1] || "";
+  assert(!pySymbolsSection.includes("val"), "Alias 'val' should not be in Symbols");
+  assert(!pySymbolsSection.includes("validate"), "Original 'validate' should not be in Symbols");
+  assert(!pySymbolsSection.includes("format_date"), "Imported 'format_date' should not be in Symbols");
+  assert(!pySymbolsSection.includes("os"), "Imported 'os' should not be in Symbols");
+
+  // Local symbols still present
+  assert(pySymbolsSection.includes("UserService"), "UserService should be in Symbols");
+  assert(pySymbolsSection.includes("helper"), "helper should be in Symbols");
+
+  console.log("  => Python aliased import resolution OK");
+
+  await client.shutdown();
+}
+
 // -- main ------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -416,6 +780,12 @@ async function run(): Promise<void> {
 
   console.log("\n=== get_type (Issue #5) ===");
   await testGetType();
+
+  console.log("\n=== get_document_overview (Issue #14) ===");
+  await testGetDocumentOverview();
+
+  console.log("\n=== get_document_overview with aliases (Issue #16) ===");
+  await testGetDocumentOverviewWithAliases();
 
   console.log(`\nPASS jsonl regression: ${fixtureRoot}`);
 }

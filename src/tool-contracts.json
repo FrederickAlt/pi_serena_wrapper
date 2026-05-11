@@ -145,6 +145,24 @@
         "required": ["name_path"],
         "additionalProperties": false
       }
+    },
+    "get_document_overview": {
+      "description": "Get a two-section plain-text overview of a source file: Imports (what the file consumes) and Symbols (what the file defines, each with body line ranges).",
+      "params": {
+        "type": "object",
+        "properties": {
+          "relative_path": {
+            "type": "string",
+            "description": "Path to a source file, relative to the current project root."
+          },
+          "depth": {
+            "type": "number",
+            "description": "Descendant nesting depth for the symbols tree. Default 0 (top-level only)."
+          }
+        },
+        "required": ["relative_path"],
+        "additionalProperties": false
+      }
     }
   }
 }

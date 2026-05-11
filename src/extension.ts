@@ -49,7 +49,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // -- get_document_symbols -----------------------------------------------
+  // -- get_document_symbols (deprecated) ----------------------------------
 
   pi.registerTool({
     name: "get_document_symbols",
@@ -57,12 +57,40 @@ export default function (pi: ExtensionAPI) {
     description: toolDescriptions.get_document_symbols,
     parameters: toolSchemas.get_document_symbols,
     promptGuidelines: [
-      "Prefer get_document_symbols over read/grep for understanding the structure of a source file.",
-      "Use depth=1 to see top-level symbols and their immediate children (e.g. class members).",
+      "DEPRECATED: Prefer get_document_overview instead, which includes symbol line ranges and file imports.",
+      "This tool returns only a structural outline without line ranges; get_document_overview provides both symbol ranges and import information.",
     ],
     execute: async (toolCallId, params, signal) => {
       const bridge = clientFor();
       const text = await bridge.callTool("get_document_symbols", params as Record<string, unknown>, signal) as string;
+      return {
+        content: [
+          { type: "text" as const, text },
+        ],
+        details: {},
+      };
+    },
+  });
+
+  // -- get_document_overview ----------------------------------------------
+
+  pi.registerTool({
+    name: "get_document_overview",
+    label: "Get Document Overview",
+    description: toolDescriptions.get_document_overview,
+    parameters: toolSchemas.get_document_overview,
+    promptGuidelines: [
+      "Use get_document_overview to get a two-section plain-text overview of a source file: Imports and Symbols.",
+      "The Imports section shows each source module with its imported names, classified as [internal] or [external].",
+      "Internal imports are resolved to their definition file and line range (e.g. [internal → src/utils.ts:1-3]).",
+      "The Symbols section shows each locally-defined symbol with Kind Name:startLine-endLine, 2-space indented by nesting.",
+      "Imported bindings are excluded from the Symbols section.",
+      "Use depth to control nesting (0 = top-level only, 1 = one level of children, etc.). Default 0.",
+      "For languages without import parser support (non-TS/Python), the Imports section is omitted but Symbols still work.",
+    ],
+    execute: async (toolCallId, params, signal) => {
+      const bridge = clientFor();
+      const text = await bridge.callTool("get_document_overview", params as Record<string, unknown>, signal) as string;
       return {
         content: [
           { type: "text" as const, text },

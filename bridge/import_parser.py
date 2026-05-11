@@ -1,7 +1,12 @@
 """Self-contained tree-sitter module that extracts imports from source files.
 
 Given source content and a language identifier (``typescript``, ``tsx``, or
-``python``), returns a list of ``(imported_name, source_module)`` pairs.
+``python``), returns a list of ``(original_name, binding_name, source_module)``
+triples.  *original_name* is the symbol's canonical name (the one known to
+workspace resolution); *binding_name* is the local alias (equals *original_name*
+when no alias is present); *source_module* is the module specifier from the
+import statement.
+
 Unknown languages return an empty list.
 
 Supports every syntactic edge case:
@@ -31,8 +36,8 @@ _SUPPORTED_LANGUAGES = ("typescript", "tsx", "python")
 # ---------------------------------------------------------------------------
 
 
-def parse_imports(source_code: str, language: str) -> list[tuple[str, str]]:
-    """Extract ``(imported_name, source_module)`` pairs from *source_code*.
+def parse_imports(source_code: str, language: str) -> list[tuple[str, str, str]]:
+    """Extract ``(original_name, binding_name, source_module)`` triples from *source_code*.
 
     *language* must be one of ``"typescript"``, ``"tsx"``, or ``"python"``.
     Unknown language identifiers silently return an empty list.
@@ -47,7 +52,7 @@ def parse_imports(source_code: str, language: str) -> list[tuple[str, str]]:
         return _parse_typescript_imports(source_code, language)
 
 
-def parse_imports_file(file_path: str, language: str) -> list[tuple[str, str]]:
+def parse_imports_file(file_path: str, language: str) -> list[tuple[str, str, str]]:
     """Convenience: read *file_path* and run :func:`parse_imports`."""
     with open(file_path, encoding="utf-8") as f:
         source = f.read()
@@ -59,7 +64,7 @@ def parse_imports_file(file_path: str, language: str) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
-def _parse_python_imports(source: str) -> list[tuple[str, str]]:
+def _parse_python_imports(source: str) -> list[tuple[str, str, str]]:
     """Extract imports from Python source via tree-sitter."""
     import tree_sitter_python as tspython
     from tree_sitter import Language, Parser  # type: ignore[import-untyped]
@@ -69,12 +74,12 @@ def _parse_python_imports(source: str) -> list[tuple[str, str]]:
     tree = parser.parse(source.encode("utf-8"))
     root_node = tree.root_node
 
-    pairs: list[tuple[str, str]] = []
+    pairs: list[tuple[str, str, str]] = []
     _walk_python(root_node, pairs)
     return pairs
 
 
-def _walk_python(node: object, pairs: list[tuple[str, str]]) -> None:
+def _walk_python(node: object, pairs: list[tuple[str, str, str]]) -> None:
     """Walk the tree recursively, dispatching on node type."""
     try:
         ntype = node.type  # type: ignore[union-attr]
@@ -95,7 +100,7 @@ def _walk_python(node: object, pairs: list[tuple[str, str]]) -> None:
 
 
 def _handle_py_import_statement(
-    node: object, pairs: list[tuple[str, str]]
+    node: object, pairs: list[tuple[str, str, str]]
 ) -> None:
     r"""Process ``import os`` or ``import os, sys``."""
     try:
@@ -105,15 +110,15 @@ def _handle_py_import_statement(
     for child in children:
         if getattr(child, "type", "") == "dotted_name":
             text = _node_text(child)
-            pairs.append((text, text))
+            pairs.append((text, text, text))
         elif getattr(child, "type", "") == "aliased_import":
-            # ``import X as Y`` — use the alias name
-            name = _extract_py_alias_name(child)
-            pairs.append((name, name))
+            # ``import X as Y`` — original is X, binding is Y
+            original, alias = _extract_py_aliased_names(child)
+            pairs.append((original, alias, original))
 
 
 def _handle_py_import_from_statement(
-    node: object, pairs: list[tuple[str, str]]
+    node: object, pairs: list[tuple[str, str, str]]
 ) -> None:
     r"""Process ``from X import Y``, ``from .X import Y``, ``from X import Y as Z``,
     ``from X import (a,\n b)``."""
@@ -144,10 +149,11 @@ def _handle_py_import_from_statement(
 
     for name_node in name_nodes:
         if getattr(name_node, "type", "") == "aliased_import":
-            alias = _extract_py_alias_name(name_node)
-            pairs.append((alias, module_text))
+            original, alias = _extract_py_aliased_names(name_node)
+            pairs.append((original, alias, module_text))
         else:
-            pairs.append((_node_text(name_node), module_text))
+            name = _node_text(name_node)
+            pairs.append((name, name, module_text))
 
 
 def _extract_py_relative_module(relative_import_node: object) -> tuple[str, int]:
@@ -170,16 +176,18 @@ def _extract_py_relative_module(relative_import_node: object) -> tuple[str, int]
     return (module_text, dots)
 
 
-def _extract_py_alias_name(aliased_import_node: object) -> str:
-    """From an ``aliased_import`` node like ``Base as B``, extract the alias ``"B"``.
+def _extract_py_aliased_names(aliased_import_node: object) -> tuple[str, str]:
+    """From an ``aliased_import`` node like ``Base as B``, extract
+    ``("Base", "B")`` — (original_name, alias_name).
 
     Structure: (aliased_import name:(dotted_name) as alias:(identifier)).
-    Falls back to the original name if there is no alias.
+    Falls back to using the first name as both original and alias.
     """
     try:
         children = aliased_import_node.children  # type: ignore[union-attr]
     except AttributeError:
-        return _node_text(aliased_import_node)
+        text = _node_text(aliased_import_node)
+        return (text, text)
 
     identifiers: list[str] = []
     for child in children:
@@ -190,10 +198,11 @@ def _extract_py_alias_name(aliased_import_node: object) -> str:
             identifiers.append(_node_text(child))
 
     if len(identifiers) >= 2:
-        return identifiers[-1]  # alias
+        return (identifiers[0], identifiers[-1])  # (original, alias)
     elif identifiers:
-        return identifiers[0]
-    return _node_text(aliased_import_node)
+        return (identifiers[0], identifiers[0])
+    text = _node_text(aliased_import_node)
+    return (text, text)
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +212,7 @@ def _extract_py_alias_name(aliased_import_node: object) -> str:
 
 def _parse_typescript_imports(
     source: str, language: str
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, str]]:
     """Extract imports from TypeScript/TSX source via tree-sitter."""
     import tree_sitter_typescript as tsts
     from tree_sitter import Language, Parser  # type: ignore[import-untyped]
@@ -217,12 +226,12 @@ def _parse_typescript_imports(
     tree = parser.parse(source.encode("utf-8"))
     root_node = tree.root_node
 
-    pairs: list[tuple[str, str]] = []
+    pairs: list[tuple[str, str, str]] = []
     _walk_typescript(root_node, pairs)
     return pairs
 
 
-def _walk_typescript(node: object, pairs: list[tuple[str, str]]) -> None:
+def _walk_typescript(node: object, pairs: list[tuple[str, str, str]]) -> None:
     """Walk the tree recursively, dispatching on node type."""
     try:
         ntype = node.type  # type: ignore[union-attr]
@@ -245,7 +254,7 @@ def _walk_typescript(node: object, pairs: list[tuple[str, str]]) -> None:
 
 
 def _handle_ts_import_statement(
-    node: object, pairs: list[tuple[str, str]]
+    node: object, pairs: list[tuple[str, str, str]]
 ) -> None:
     """Process ``import … from 'module'`` statements.
 
@@ -269,7 +278,7 @@ def _handle_ts_import_statement(
 def _extract_ts_import_clause_names(
     clause_node: object,
     module_specifier: str,
-    pairs: list[tuple[str, str]],
+    pairs: list[tuple[str, str, str]],
 ) -> None:
     """Walk the import_clause and collect every imported name.
 
@@ -288,18 +297,19 @@ def _extract_ts_import_clause_names(
         ctype = getattr(child, "type", "")
         if ctype == "identifier":
             # Default import: ``import X from 'module'``
-            pairs.append((_node_text(child), module_specifier))
+            name = _node_text(child)
+            pairs.append((name, name, module_specifier))
         elif ctype == "namespace_import":
             # ``import * as X from 'module'``
             name = _extract_ts_namespace_name(child)
             if name:
-                pairs.append((name, module_specifier))
+                pairs.append((name, name, module_specifier))
         elif ctype == "named_imports":
             _extract_ts_named_imports(child, module_specifier, pairs)
 
 
 def _handle_ts_export_statement(
-    node: object, pairs: list[tuple[str, str]]
+    node: object, pairs: list[tuple[str, str, str]]
 ) -> None:
     """Process re-exports: ``export { X } from 'module'``,
     ``export { X as Y } from 'module'``."""
@@ -320,7 +330,7 @@ def _handle_ts_export_statement(
 def _extract_ts_export_clause_names(
     clause_node: object,
     module_specifier: str,
-    pairs: list[tuple[str, str]],
+    pairs: list[tuple[str, str, str]],
 ) -> None:
     """Extract names from ``{ X }`` or ``{ X as Y }`` in an export clause."""
     try:
@@ -330,14 +340,15 @@ def _extract_ts_export_clause_names(
 
     for child in children:
         if getattr(child, "type", "") == "export_specifier":
-            name = _extract_ts_export_specifier_name(child)
-            if name:
-                pairs.append((name, module_specifier))
+            result = _extract_ts_export_specifier_names(child)
+            if result:
+                original, binding = result
+                pairs.append((original, binding, module_specifier))
 
 
-def _extract_ts_export_specifier_name(node: object) -> str | None:
-    """Get the effective name from an ``export_specifier``.
-    For ``X`` → ``"X"``, for ``X as Y`` → ``"Y"``."""
+def _extract_ts_export_specifier_names(node: object) -> tuple[str, str] | None:
+    """Get (original_name, binding_name) from an ``export_specifier``.
+    For ``X`` → ``("X", "X")``, for ``X as Y`` → ``("X", "Y")``."""
     try:
         children = node.children  # type: ignore[union-attr]
     except AttributeError:
@@ -349,16 +360,16 @@ def _extract_ts_export_specifier_name(node: object) -> str | None:
             identifiers.append(_node_text(child))
 
     if len(identifiers) >= 2:
-        return identifiers[-1]  # alias
+        return (identifiers[0], identifiers[-1])  # (original, alias)
     elif identifiers:
-        return identifiers[0]
+        return (identifiers[0], identifiers[0])
     return None
 
 
 def _extract_ts_named_imports(
     named_imports_node: object,
     module_specifier: str,
-    pairs: list[tuple[str, str]],
+    pairs: list[tuple[str, str, str]],
 ) -> None:
     """Parse ``{ a, b }`` or ``{ a as b }`` or ``{ type a }``."""
     try:
@@ -368,14 +379,16 @@ def _extract_ts_named_imports(
 
     for child in children:
         if getattr(child, "type", "") == "import_specifier":
-            name = _extract_ts_import_specifier_name(child)
-            if name:
-                pairs.append((name, module_specifier))
+            result = _extract_ts_import_specifier_names(child)
+            if result:
+                original, binding = result
+                pairs.append((original, binding, module_specifier))
 
 
-def _extract_ts_import_specifier_name(node: object) -> str | None:
-    """Get the effective name from an ``import_specifier``.
-    For ``a`` → ``"a"``, for ``a as b`` → ``"b"``, for ``type a`` → ``"a"``."""
+def _extract_ts_import_specifier_names(node: object) -> tuple[str, str] | None:
+    """Get (original_name, binding_name) from an ``import_specifier``.
+    For ``a`` → ``("a", "a")``, for ``a as b`` → ``("a", "b")``,
+    for ``type a`` → ``("a", "a")``."""
     try:
         children = node.children  # type: ignore[union-attr]
     except AttributeError:
@@ -387,8 +400,10 @@ def _extract_ts_import_specifier_name(node: object) -> str | None:
             identifiers.append(_node_text(child))
 
     if identifiers:
-        # First identifier is the name (or alias if there are multiple)
-        return identifiers[-1] if len(identifiers) >= 2 else identifiers[0]
+        if len(identifiers) >= 2:
+            return (identifiers[0], identifiers[-1])  # (original, alias)
+        else:
+            return (identifiers[0], identifiers[0])
     return None
 
 
@@ -405,7 +420,7 @@ def _extract_ts_namespace_name(node: object) -> str | None:
 
 
 def _handle_ts_call_expression(
-    node: object, pairs: list[tuple[str, str]]
+    node: object, pairs: list[tuple[str, str, str]]
 ) -> None:
     """Handle ``require('module')`` and dynamic ``import('module')`` calls."""
     try:
@@ -426,7 +441,7 @@ def _handle_ts_call_expression(
             string_value = _extract_ts_string_from_arguments(child)
 
     if func_name in ("require", "import") and string_value:
-        pairs.append((string_value, string_value))
+        pairs.append((string_value, string_value, string_value))
 
 
 def _extract_ts_string_from_arguments(args_node: object) -> str | None:

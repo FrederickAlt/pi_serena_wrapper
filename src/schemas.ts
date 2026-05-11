@@ -98,6 +98,11 @@ export const toolSchemas = {
     name_path: NamePath,
     relative_path: Type.Optional(RelativePath),
   }),
+
+  get_document_overview: Type.Object({
+    relative_path: RelativePath,
+    depth: Type.Optional(Type.Number({ description: "Descendant nesting depth for the symbols tree. Default 0 (top-level only)." })),
+  }),
 } as const;
 
 // ---------------------------------------------------------------------------

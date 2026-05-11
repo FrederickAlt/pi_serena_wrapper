@@ -19,7 +19,7 @@ from import_parser import parse_imports, parse_imports_file
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _normalise(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
+def _normalise(pairs: list[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
     """Convert to a set for order-independent comparison."""
     return set(pairs)
 
@@ -31,23 +31,24 @@ def _normalise(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
 class TestPythonImportX:
     def test_single_import(self):
         src = "import os\n"
-        assert _normalise(parse_imports(src, "python")) == {("os", "os")}
+        assert _normalise(parse_imports(src, "python")) == {("os", "os", "os")}
 
     def test_multiple_imports_comma(self):
         src = "import os, sys, json\n"
         assert _normalise(parse_imports(src, "python")) == {
-            ("os", "os"),
-            ("sys", "sys"),
-            ("json", "json"),
+            ("os", "os", "os"),
+            ("sys", "sys", "sys"),
+            ("json", "json", "json"),
         }
 
     def test_dotted_import(self):
         src = "import os.path\n"
-        assert _normalise(parse_imports(src, "python")) == {("os.path", "os.path")}
+        assert _normalise(parse_imports(src, "python")) == {("os.path", "os.path", "os.path")}
 
     def test_import_with_alias(self):
+        """import numpy as np — original is numpy, binding is np, module is numpy."""
         src = "import numpy as np\n"
-        assert _normalise(parse_imports(src, "python")) == {("np", "np")}
+        assert _normalise(parse_imports(src, "python")) == {("numpy", "np", "numpy")}
 
 
 # ---------------------------------------------------------------------------
@@ -57,14 +58,14 @@ class TestPythonImportX:
 class TestPythonFromImport:
     def test_single_name(self):
         src = "from pathlib import Path\n"
-        assert _normalise(parse_imports(src, "python")) == {("Path", "pathlib")}
+        assert _normalise(parse_imports(src, "python")) == {("Path", "Path", "pathlib")}
 
     def test_multiple_names(self):
         src = "from typing import List, Dict, Optional\n"
         assert _normalise(parse_imports(src, "python")) == {
-            ("List", "typing"),
-            ("Dict", "typing"),
-            ("Optional", "typing"),
+            ("List", "List", "typing"),
+            ("Dict", "Dict", "typing"),
+            ("Optional", "Optional", "typing"),
         }
 
     def test_multi_line_parens(self):
@@ -74,13 +75,14 @@ class TestPythonFromImport:
 )
 """
         assert _normalise(parse_imports(src, "python")) == {
-            ("models", "django.db"),
-            ("fields", "django.db"),
+            ("models", "models", "django.db"),
+            ("fields", "fields", "django.db"),
         }
 
     def test_alias(self):
+        """from collections import OrderedDict as OD — original=OrderedDict, binding=OD."""
         src = "from collections import OrderedDict as OD\n"
-        assert _normalise(parse_imports(src, "python")) == {("OD", "collections")}
+        assert _normalise(parse_imports(src, "python")) == {("OrderedDict", "OD", "collections")}
 
 
 # ---------------------------------------------------------------------------
@@ -90,19 +92,20 @@ class TestPythonFromImport:
 class TestPythonRelativeImports:
     def test_single_dot(self):
         src = "from .utils import helper\n"
-        assert _normalise(parse_imports(src, "python")) == {("helper", ".utils")}
+        assert _normalise(parse_imports(src, "python")) == {("helper", "helper", ".utils")}
 
     def test_double_dot(self):
         src = "from ..base import Base\n"
-        assert _normalise(parse_imports(src, "python")) == {("Base", "..base")}
+        assert _normalise(parse_imports(src, "python")) == {("Base", "Base", "..base")}
 
     def test_triple_dot(self):
         src = "from ...grandparent import Thing\n"
-        assert _normalise(parse_imports(src, "python")) == {("Thing", "...grandparent")}
+        assert _normalise(parse_imports(src, "python")) == {("Thing", "Thing", "...grandparent")}
 
     def test_relative_with_alias(self):
+        """from .sibling import func as f — original=func, binding=f, module=.sibling"""
         src = "from .sibling import func as f\n"
-        assert _normalise(parse_imports(src, "python")) == {("f", ".sibling")}
+        assert _normalise(parse_imports(src, "python")) == {("func", "f", ".sibling")}
 
 
 # ---------------------------------------------------------------------------
@@ -112,11 +115,11 @@ class TestPythonRelativeImports:
 class TestTSDefaultImport:
     def test_single_default(self):
         src = 'import React from "react";\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("React", "react")}
+        assert _normalise(parse_imports(src, "typescript")) == {("React", "React", "react")}
 
     def test_single_default_tsx(self):
         src = 'import React from "react";\n'
-        assert _normalise(parse_imports(src, "tsx")) == {("React", "react")}
+        assert _normalise(parse_imports(src, "tsx")) == {("React", "React", "react")}
 
 
 # ---------------------------------------------------------------------------
@@ -126,15 +129,20 @@ class TestTSDefaultImport:
 class TestTSNamedImports:
     def test_single_named(self):
         src = 'import { useState } from "react";\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("useState", "react")}
+        assert _normalise(parse_imports(src, "typescript")) == {("useState", "useState", "react")}
 
     def test_multiple_named(self):
         src = 'import { a, b, c } from "module";\n'
         assert _normalise(parse_imports(src, "typescript")) == {
-            ("a", "module"),
-            ("b", "module"),
-            ("c", "module"),
+            ("a", "a", "module"),
+            ("b", "b", "module"),
+            ("c", "c", "module"),
         }
+
+    def test_named_with_alias(self):
+        """import { useState as useSt } from 'react' — original=useState, binding=useSt."""
+        src = 'import { useState as useSt } from "react";\n'
+        assert _normalise(parse_imports(src, "typescript")) == {("useState", "useSt", "react")}
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +152,7 @@ class TestTSNamedImports:
 class TestTSNamespaceImport:
     def test_namespace(self):
         src = 'import * as Everything from "module";\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("Everything", "module")}
+        assert _normalise(parse_imports(src, "typescript")) == {("Everything", "Everything", "module")}
 
 
 # ---------------------------------------------------------------------------
@@ -154,15 +162,15 @@ class TestTSNamespaceImport:
 class TestTSTypeOnlyImports:
     def test_type_only_import(self):
         src = 'import type { User } from "./types";\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("User", "./types")}
+        assert _normalise(parse_imports(src, "typescript")) == {("User", "User", "./types")}
 
     def test_inline_type_import(self):
         src = 'import { type Foo } from "./types";\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("Foo", "./types")}
+        assert _normalise(parse_imports(src, "typescript")) == {("Foo", "Foo", "./types")}
 
     def test_type_only_default(self):
         src = 'import type MyType from "./types";\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("MyType", "./types")}
+        assert _normalise(parse_imports(src, "typescript")) == {("MyType", "MyType", "./types")}
 
 
 # ---------------------------------------------------------------------------
@@ -173,9 +181,9 @@ class TestTSCombinedImport:
     def test_combined(self):
         src = 'import React, { useState, useEffect } from "react";\n'
         assert _normalise(parse_imports(src, "typescript")) == {
-            ("React", "react"),
-            ("useState", "react"),
-            ("useEffect", "react"),
+            ("React", "React", "react"),
+            ("useState", "useState", "react"),
+            ("useEffect", "useEffect", "react"),
         }
 
 
@@ -186,17 +194,18 @@ class TestTSCombinedImport:
 class TestTSReexports:
     def test_simple_reexport(self):
         src = 'export { Foo } from "./module";\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("Foo", "./module")}
+        assert _normalise(parse_imports(src, "typescript")) == {("Foo", "Foo", "./module")}
 
     def test_reexport_with_alias(self):
+        """export { Foo as Bar } from './module' — original=Foo, binding=Bar."""
         src = 'export { Foo as Bar } from "./module";\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("Bar", "./module")}
+        assert _normalise(parse_imports(src, "typescript")) == {("Foo", "Bar", "./module")}
 
     def test_multiple_reexports(self):
         src = 'export { X, Y } from "./module";\n'
         assert _normalise(parse_imports(src, "typescript")) == {
-            ("X", "./module"),
-            ("Y", "./module"),
+            ("X", "X", "./module"),
+            ("Y", "Y", "./module"),
         }
 
 
@@ -207,11 +216,11 @@ class TestTSReexports:
 class TestTSRequire:
     def test_const_require(self):
         src = 'const path = require("path");\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("path", "path")}
+        assert _normalise(parse_imports(src, "typescript")) == {("path", "path", "path")}
 
     def test_require_without_const(self):
         src = 'require("side-effect");\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("side-effect", "side-effect")}
+        assert _normalise(parse_imports(src, "typescript")) == {("side-effect", "side-effect", "side-effect")}
 
 
 # ---------------------------------------------------------------------------
@@ -221,11 +230,11 @@ class TestTSRequire:
 class TestTSDynamicImport:
     def test_await_import(self):
         src = 'const mod = await import("./module");\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("./module", "./module")}
+        assert _normalise(parse_imports(src, "typescript")) == {("./module", "./module", "./module")}
 
     def test_promise_import(self):
         src = 'import("./module").then(m => m.doThing());\n'
-        assert _normalise(parse_imports(src, "typescript")) == {("./module", "./module")}
+        assert _normalise(parse_imports(src, "typescript")) == {("./module", "./module", "./module")}
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +250,7 @@ class TestUnknownLanguage:
     def test_case_insensitive(self):
         # Python/PYTHON should both work
         src = "import os\n"
-        assert _normalise(parse_imports(src, "PYTHON")) == {("os", "os")}
+        assert _normalise(parse_imports(src, "PYTHON")) == {("os", "os", "os")}
         assert _normalise(parse_imports(src, "TYPESCRIPT")) == set()  # invalid TS but shouldn't crash
 
 
@@ -264,14 +273,47 @@ class TestEdgeCases:
 
     def test_single_quotes_typescript(self):
         src = "import X from './module';\n"
-        assert _normalise(parse_imports(src, "typescript")) == {("X", "./module")}
+        assert _normalise(parse_imports(src, "typescript")) == {("X", "X", "./module")}
 
     def test_backtick_string_typescript(self):
         src = "import X from `./module`;\n"
         # template strings are unusual but let's make sure we handle them
         pairs = parse_imports(src, "typescript")
         # The template might not be a simple 'string' node in TS; accept empty
-        assert pairs == [] or pairs == [("./module", "./module")]
+        assert pairs == [] or pairs == [("./module", "./module", "./module")]
+
+
+# ---------------------------------------------------------------------------
+# Alias-specific tests (Issue #16)
+# ---------------------------------------------------------------------------
+
+class TestAliasTracking:
+    """Verify that original (canonical) name is tracked alongside the binding (alias)."""
+
+    def test_py_from_import_with_alias(self):
+        """from utils import validate as val — original validate, binding val."""
+        src = "from utils import validate as val\n"
+        assert _normalise(parse_imports(src, "python")) == {("validate", "val", "utils")}
+
+    def test_py_import_with_alias(self):
+        """import numpy as np — original numpy, binding np, module numpy."""
+        src = "import numpy as np\n"
+        assert _normalise(parse_imports(src, "python")) == {("numpy", "np", "numpy")}
+
+    def test_ts_named_import_with_alias(self):
+        """import { validate as val } from './utils' — original validate, binding val."""
+        src = 'import { validate as val } from "./utils";\n'
+        assert _normalise(parse_imports(src, "typescript")) == {("validate", "val", "./utils")}
+
+    def test_ts_default_import_no_alias(self):
+        """import React from 'react' — no alias, original==binding."""
+        src = 'import React from "react";\n'
+        assert _normalise(parse_imports(src, "typescript")) == {("React", "React", "react")}
+
+    def test_ts_reexport_with_alias(self):
+        """export { X as Y } from './module' — original X, binding Y."""
+        src = 'export { X as Y } from "./module";\n'
+        assert _normalise(parse_imports(src, "typescript")) == {("X", "Y", "./module")}
 
 
 # ---------------------------------------------------------------------------
@@ -283,13 +325,13 @@ class TestParseImportsFile:
         file_path = tmp_path / "test.py"
         file_path.write_text("import os\nfrom pathlib import Path\n")
         result = parse_imports_file(str(file_path), "python")
-        assert _normalise(result) == {("os", "os"), ("Path", "pathlib")}
+        assert _normalise(result) == {("os", "os", "os"), ("Path", "Path", "pathlib")}
 
     def test_tsx_file_reading(self, tmp_path: Path):
         file_path = tmp_path / "test.tsx"
         file_path.write_text('import React from "react";\n')
         result = parse_imports_file(str(file_path), "tsx")
-        assert _normalise(result) == {("React", "react")}
+        assert _normalise(result) == {("React", "React", "react")}
 
 
 if __name__ == "__main__":
