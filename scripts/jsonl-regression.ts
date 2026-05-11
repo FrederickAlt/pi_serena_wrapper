@@ -1033,6 +1033,79 @@ async function testMixedLanguageOverview(): Promise<void> {
   await client.shutdown();
 }
 
+// -- lazy language server start (Issue #18) ----------------------------------
+
+async function testLazyLanguageStart(): Promise<void> {
+  // Reuse the mixed-language fixture (TS + Python files on disk)
+  await writeMixedLanguageFixture();
+
+  // Override .serenaproject.yml to list ONLY typescript
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - typescript\n",
+  );
+
+  // Init: only typescript should start
+  const initResult1 = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult1.ok === true, `Init (TS only) should succeed: ${JSON.stringify(initResult1)}`);
+  assert(initResult1.language === "typescript", `Primary should be typescript: ${initResult1.language}`);
+  const langs1 = initResult1.languages as string[];
+  assert(langs1.length === 1, `Expected 1 language, got ${langs1.length}: ${JSON.stringify(langs1)}`);
+  assert(langs1[0] === "typescript", `Should be typescript only: ${JSON.stringify(langs1)}`);
+  console.log(`Init (TS only) OK: languages=${JSON.stringify(langs1)}`);
+
+  await new Promise(r => setTimeout(r, 5000));
+
+  // Call get_document_overview on a .py file → should lazily start Python
+  const pyOverview = await client.callTool("get_document_overview", {
+    relative_path: "main.py",
+    depth: 0,
+  }) as string;
+
+  console.log("Lazy-start Python overview:\n" + pyOverview);
+
+  // Must NOT be TypeScript artifacts on the Python file
+  assert(!pyOverview.includes("f-string"), "Python file should not have TS f-string artifacts");
+  assert(pyOverview.includes("## Imports"), "Python file should have Imports section");
+  assert(pyOverview.includes("## Symbols"), "Python file should have Symbols section");
+  // Python-specific symbols should be proper LSP kinds
+  assert(/Class UserService:\d+-\d+/.test(pyOverview), "UserService should be a Class");
+  assert(/Function helper:\d+-\d+/.test(pyOverview), "helper should be a Function");
+  // Imported names should be excluded from Symbols
+  const pySymbolsSection = pyOverview.split("## Symbols")[1] || "";
+  assert(!pySymbolsSection.includes("validate"), "validate should not be in Symbols");
+  console.log("  => Python overview via lazy start OK");
+
+  // Check that .serenaproject.yml was updated to include python
+  const { readFileSync } = await import("node:fs");
+  const configAfter = readFileSync(path.join(fixtureRoot, ".serenaproject.yml"), "utf-8");
+  assert(configAfter.includes("python"), `.serenaproject.yml should now include python:\n${configAfter}`);
+  assert(configAfter.includes("typescript"), `.serenaproject.yml should still include typescript:\n${configAfter}`);
+  console.log("  => .serenaproject.yml updated OK");
+
+  // Call get_document_symbols on the Python file (also uses _ls_for_file)
+  const pySymbols = await client.callTool("get_document_symbols", {
+    relative_path: "main.py",
+    depth: 0,
+  }) as string;
+  assert(typeof pySymbols === "string", "Python get_document_symbols should return string");
+  assert(pySymbols.includes("UserService"), "Python symbols should include UserService");
+  console.log("  => Python get_document_symbols via lazy start OK");
+
+  await client.shutdown();
+
+  // Re-init: both languages should start eagerly now
+  const initResult2 = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult2.ok === true, `Re-init should succeed: ${JSON.stringify(initResult2)}`);
+  const langs2 = initResult2.languages as string[];
+  assert(langs2.length >= 2, `Expected at least 2 languages on re-init, got ${langs2.length}: ${JSON.stringify(langs2)}`);
+  assert(langs2.includes("typescript"), `Should include typescript: ${JSON.stringify(langs2)}`);
+  assert(langs2.includes("python"), `Should include python: ${JSON.stringify(langs2)}`);
+  console.log(`Re-init OK: languages=${JSON.stringify(langs2)}`);
+
+  await client.shutdown();
+}
+
 // -- main ------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -1064,6 +1137,9 @@ async function run(): Promise<void> {
 
   console.log("\n=== get_document_overview cross-dir import (Issue #19) ===");
   await testGetDocumentOverviewCrossDir();
+
+  console.log("\n=== lazy language server start (Issue #18) ===");
+  await testLazyLanguageStart();
 
   console.log(`\nPASS jsonl regression: ${fixtureRoot}`);
 }

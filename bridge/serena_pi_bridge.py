@@ -833,6 +833,85 @@ class Bridge:
             result.append(filtered)  # type: ignore[arg-type]
         return result
 
+    def _start_language_lazily(self, language: str) -> SolidLanguageServer:
+        """Start a language server for *language* on demand.
+
+        Validates the language is known to SolidLSP, creates and starts a
+        server, appends the language to ``.serenaproject.yml``, and returns
+        the new server instance.
+
+        Does not mutate ``.serenaproject.yml`` if the language server fails
+        to start.
+        """
+        assert self.cwd is not None
+
+        print(
+            f"[pi-serena-lsp] lazily starting {language} language server...",
+            file=sys.stderr,
+        )
+
+        # 1. Validate that SolidLSP knows this language.
+        try:
+            lang = Language(language)
+        except ValueError as exc:
+            raise ValueError(
+                f"Language {language!r} is not supported by SolidLSP. "
+                f"Known languages: {sorted(l.value for l in Language)}"
+            ) from exc
+
+        lang_str = str(lang)
+
+        # 2. Create and start the language server.
+        config = LanguageServerConfig(code_language=lang, encoding="utf-8")
+
+        settings = SolidLSPSettings(
+            solidlsp_dir=str(Path.home() / ".solidlsp"),
+            project_data_path=str(Path(self.cwd) / ".solidlsp"),
+        )
+
+        ls_instance = SolidLanguageServer.create(
+            config, self.cwd, solidlsp_settings=settings
+        )
+        ls_instance.start()
+
+        # 3. Store in the server map.
+        self._ls_map[lang_str] = ls_instance
+
+        # 4. Append to .serenaproject.yml so next init starts it eagerly.
+        self._append_language_to_config(lang_str)
+        if lang_str not in self._languages:
+            self._languages.append(lang_str)
+
+        return ls_instance
+
+    def _append_language_to_config(self, language: str) -> None:
+        """Append *language* to the languages list in ``.serenaproject.yml``.
+
+        Creates the file if it doesn't exist.  No-op if *language* is already
+        listed.
+        """
+        assert self.cwd is not None
+        config_path = Path(self.cwd) / ".serenaproject.yml"
+
+        if config_path.is_file():
+            with open(config_path, encoding="utf-8") as f:
+                cfg: object = yaml.safe_load(f)
+            if not isinstance(cfg, dict):
+                cfg = {}
+            languages: list[str] = list(cfg.get("languages", []) or [])
+        else:
+            cfg = {}
+            languages = []
+
+        if language in languages:
+            return
+
+        languages.append(language)
+        cfg["languages"] = languages
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, default_flow_style=False)
+
     @staticmethod
     def _format_overview_symbols(
         symbols: list[UnifiedSymbolInformation],
@@ -1049,14 +1128,19 @@ class Bridge:
     def _ls_for_file(self, relative_path: str) -> SolidLanguageServer:
         """Return the language server instance appropriate for *relative_path*.
 
-        Falls back to the primary server if no matching server is registered.
+        If the language is not yet started, tries to start it lazily.
+        Falls back to the primary server only when the file extension is
+        unrecognised (language matches the primary).
         """
         language = self._language_for_file(relative_path)
         if language in self._ls_map:
             return self._ls_map[language]
-        # Fallback to primary server
-        assert self.ls is not None
-        return self.ls
+        # Unrecognised extension → falls back to primary (existing behaviour)
+        if language == self.language:
+            assert self.ls is not None
+            return self.ls
+        # Recognised extension but no running server → start lazily
+        return self._start_language_lazily(language)
 
 
 # ---------------------------------------------------------------------------
