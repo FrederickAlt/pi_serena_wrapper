@@ -54,7 +54,7 @@ Function helper:69-80
 
 Each imports line: `<module> — <names> [classification]`. Multiple names from the same module are comma-separated. Names with aliases (e.g., `plt` aliasing `pyplot`) are shown as `pyplot (as plt)`.
 
-Each symbols line: `Kind Name:startLine-endLine`. Indentation is 2 spaces per nesting level. Line numbers are zero-based from `location.range`.
+Each symbols line: `Kind Name:startLine-endLine`. Indentation is 2 spaces per nesting level. Line numbers are 1-based, consistent with pi's `read` and `write` tools.
 
 When import resolution fails for an internal import, the annotation falls back to `[internal]` without a location. The overview always returns a best-effort result — no errors on resolution failures.
 

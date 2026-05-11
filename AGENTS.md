@@ -6,6 +6,8 @@ A **pi extension** that exposes SolidLSP-backed symbolic LSP tools as pi tools. 
 
 The extension is a thin bridge between two runtimes: the pi agent (Node.js/TypeScript) and a vendored SolidLSP (Python). The Node side registers tools, manages per-project bridge clients, and sends JSON-RPC requests over stdin/stdout to a Python subprocess that wraps `SolidLanguageServer`.
 
+A standalone CLI (`bridge/cli.py`) is also provided for **manual debugging only** — it calls the Python `Bridge` class directly (no JSONL, no agent harness). It is not intended for programmatic or agent-driven use.
+
 ---
 
 ## Repository layout

@@ -29,8 +29,9 @@
 
    Replaces `get_document_symbols`. Returns a two-section plain-text overview of a
    single file: `## Imports` (what the file consumes) and `## Symbols` (what the
-   file defines). Each symbol line includes its body line range:
-   `Class UserService:5-67`.
+   file defines). Each symbol line includes its 1-based body line range:
+   `Class UserService:5-67`. Line numbers are 1-based, consistent with pi's
+   `read` and `write` tools.
 
    The imports section is extracted via tree-sitter parsing (not LSP) because
    SolidLSP drops external definition locations. Imports are classified:

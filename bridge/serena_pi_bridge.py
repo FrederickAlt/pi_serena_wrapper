@@ -332,8 +332,8 @@ class Bridge:
         defining_location = defining.get("location") or {}
         defining_selection_range = defining.get("selectionRange") or defining.get("range") or {}
 
-        start_line = defining_selection_range.get("start", {}).get("line", 0)
-        end_line = defining_selection_range.get("end", {}).get("line", 0)
+        start_line = defining_selection_range.get("start", {}).get("line", 0) + 1
+        end_line = defining_selection_range.get("end", {}).get("line", 0) + 1
 
         result: dict[str, object] = {
             "name_path": compute_name_path(defining),
@@ -441,8 +441,8 @@ class Bridge:
                 "kind": SymbolKind(sym["kind"]).name,
                 "location": (
                     f"{sym_loc.get('relativePath', '')}:"
-                    f"{sym_range.get('start', {}).get('line', 0)}-"
-                    f"{sym_range.get('end', {}).get('line', 0)}"
+                    f"{sym_range.get('start', {}).get('line', 0) + 1}-"
+                    f"{sym_range.get('end', {}).get('line', 0) + 1}"
                 ),
             })
 
@@ -705,8 +705,8 @@ class Bridge:
             location = symbol.get("location") or {}
             rel_path = location.get("relativePath")
             rng = location.get("range") or {}
-            start = rng.get("start", {}).get("line", 0)
-            end = rng.get("end", {}).get("line", 0)
+            start = rng.get("start", {}).get("line", 0) + 1
+            end = rng.get("end", {}).get("line", 0) + 1
 
             if rel_path:
                 return f"{rel_path}:{start}-{end}"
@@ -751,8 +751,8 @@ class Bridge:
 
             # Get the symbol's body line range (use "range", not "selectionRange")
             rng = sym.get("range") or {}
-            start_line = rng.get("start", {}).get("line", 0)
-            end_line = rng.get("end", {}).get("line", 0)
+            start_line = rng.get("start", {}).get("line", 0) + 1
+            end_line = rng.get("end", {}).get("line", 0) + 1
 
             lines.append(f"{indent}{kind_name} {name}:{start_line}-{end_line}")
 
@@ -789,8 +789,8 @@ class Bridge:
         rng = loc.get("range")
         if rng is None:
             return f"{rel}:0-0"
-        start_line = rng["start"]["line"]
-        end_line = rng["end"]["line"]
+        start_line = rng["start"]["line"] + 1
+        end_line = rng["end"]["line"] + 1
         return f"{rel}:{start_line}-{end_line}"
 
     def _filter_by_snippet(
