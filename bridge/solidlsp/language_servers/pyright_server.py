@@ -55,7 +55,7 @@ class PyrightServer(SolidLanguageServer):
 
     @override
     def is_ignored_dirname(self, dirname: str) -> bool:
-        return super().is_ignored_dirname(dirname) or dirname in ["venv", "__pycache__"]
+        return super().is_ignored_dirname(dirname) or dirname in ["venv", "__pycache__", "node_modules"]
 
     @staticmethod
     def _get_initialize_params(repository_absolute_path: str) -> InitializeParams:

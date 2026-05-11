@@ -1118,6 +1118,74 @@ async function testLazyLanguageStart(): Promise<void> {
   await client.shutdown();
 }
 
+// -- name collision fixture (Issue #24) ------------------------------------
+
+async function writePythonFixtureWithNameCollision(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(fixtureRoot, { recursive: true });
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - python\n",
+  );
+
+  // Internal library with a class named 'Language' — exactly the name
+  // that tree_sitter exports externally.  This creates a name collision.
+  await writeFile(path.join(fixtureRoot, "internal_lib.py"), [
+    "class Language:",
+    "    pass",
+    "",
+  ].join("\n") + "\n");
+
+  // Main file imports 'Language' from the fictional external 'tree_sitter'
+  // AND from the internal 'internal_lib' module.
+  await writeFile(path.join(fixtureRoot, "main.py"), [
+    "from tree_sitter import Language, Parser",  // external — must stay [external]
+    "from internal_lib import Language as LibLanguage",  // internal — must be [internal]
+    "import os",
+    "",
+    "def helper():",
+    "    pass",
+    "",
+  ].join("\n") + "\n");
+}
+
+async function testImportClassificationNameCollision(): Promise<void> {
+  await writePythonFixtureWithNameCollision();
+
+  const initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
+  console.log(`Name collision init OK: language=${initResult.language}`);
+
+  await new Promise(r => setTimeout(r, 4000));
+
+  const overview = await client.callTool("get_document_overview", {
+    relative_path: "main.py",
+    depth: 0,
+  }) as string;
+
+  console.log("Name collision overview:\n" + overview);
+
+  // tree_sitter is an external package — must NOT be classified as internal
+  // even though `Language` also exists as an internal class in internal_lib.py
+  assert(overview.includes("## Imports"), "Should have Imports section");
+  assert(/tree_sitter.*\[external\]/.test(overview),
+    "tree_sitter should be [external] even with internal Language class");
+  assert(!/tree_sitter.*\[internal/.test(overview),
+    "tree_sitter must NOT be classified as [internal]");
+
+  // internal_lib is local — must be classified as internal
+  assert(/internal_lib.*\[internal/.test(overview),
+    "internal_lib should be [internal]");
+
+  // os is standard library — must be external
+  assert(/os.*\[external\]/.test(overview),
+    "os should be [external]");
+
+  console.log("  => import classification with name collision OK");
+
+  await client.shutdown();
+}
+
 // -- main ------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -1152,6 +1220,9 @@ async function run(): Promise<void> {
 
   console.log("\n=== lazy language server start (Issue #18) ===");
   await testLazyLanguageStart();
+
+  console.log("\n=== import classification name collision (Issue #24) ===");
+  await testImportClassificationNameCollision();
 
   console.log(`\nPASS jsonl regression: ${fixtureRoot}`);
 }

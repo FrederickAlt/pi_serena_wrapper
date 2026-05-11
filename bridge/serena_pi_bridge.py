@@ -427,8 +427,13 @@ class Bridge:
         if ref_relative_path is None:
             raise SymbolResolutionError(name_path, f"Symbol {name_path!r} has no relative path.")
 
-        line = location["range"]["start"]["line"]
-        column = location["range"]["start"]["character"]
+        # Use selectionRange (symbol name) for line/column, falling back to range.
+        # Pyright requires the cursor on the symbol name, not the def keyword.
+        sel_range = symbol.get("selectionRange") or location.get("range")
+        if sel_range is None:
+            raise SymbolResolutionError(name_path, f"Symbol {name_path!r} has no position information.")
+        line = sel_range["start"]["line"]
+        column = sel_range["start"]["character"]
 
         # Use the LS appropriate for the resolved symbol's file
         ref_ls = self._ls_for_file(ref_relative_path)
@@ -483,9 +488,10 @@ class Bridge:
 
         location = symbol.get("location") or {}
         relative_file_path = location.get("relativePath", "")
-        range_info = location.get("range", {})
-        line = range_info.get("start", {}).get("line", 0)
-        column = range_info.get("start", {}).get("character", 0)
+        # Use selectionRange (symbol name) for line/column, falling back to range
+        sel_range = symbol.get("selectionRange") or location.get("range", {})
+        line = sel_range.get("start", {}).get("line", 0)
+        column = sel_range.get("start", {}).get("character", 0)
 
         # Use the LS appropriate for the resolved symbol's file
         impl_ls = self._ls_for_file(relative_file_path) if relative_file_path else self.ls
@@ -764,8 +770,9 @@ class Bridge:
         """Classify a source module as internal or external.
 
         Relative module paths (starting with ``.``) are always internal.
-        Non-relative modules are resolved via workspace symbol search:
-        internal if at least one imported name resolves, external otherwise.
+        Non-relative modules are resolved via workspace symbol search and
+        verified to ensure the resolved definition actually belongs to the
+        imported module (not an internal name collision).
         """
         # Relative import — definitely internal
         if module.startswith("."):
@@ -774,9 +781,12 @@ class Bridge:
                 return f"[internal → {location}]"
             return "[internal]"
 
-        # Non-relative — try to resolve names
+        # Non-relative — try to resolve names, but verify the resolved
+        # symbol's file actually belongs to the imported module to avoid
+        # false positives from name collisions (e.g. external tree_sitter
+        # export 'Language' colliding with an internal 'Language' class).
         location = self._resolve_import_location(names, file_relative_path, module, ls)
-        if location:
+        if location and self._verify_module_file_match(location, module):
             return f"[internal → {location}]"
         return "[external]"
 
@@ -836,6 +846,49 @@ class Bridge:
                 return f"{rel_path}:{start}-{end}"
 
         return None
+
+    @staticmethod
+    def _verify_module_file_match(location: str, module: str) -> bool:
+        """Check that a resolved symbol location actually belongs to the
+        imported *module* rather than being an unrelated internal name
+        collision.
+
+        *location* is ``"rel/path:start-end"`` as returned by
+        :meth:`_resolve_import_location`.
+        *module* is the source module specifier from the import statement
+        (e.g. ``"tree_sitter"``, ``"solidlsp.ls_config"``).
+
+        The verification strips the file extension from the resolved path
+        and compares it against the module path (dots replaced with ``/``).
+        A match requires the stripped path to *end with* the module path,
+        or the module path + ``/__init__`` / ``/index``.
+        """
+        # Extract the file path from the location string
+        resolved_file = location.split(":")[0] if ":" in location else location
+        if not resolved_file:
+            return False
+
+        module_path = module.replace(".", "/")
+        normalized = resolved_file.replace("\\", "/")
+
+        # Strip file extension to get a module-like path
+        stem = normalized
+        for ext in (".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cts", ".cjs"):
+            if stem.endswith(ext):
+                stem = stem[: -len(ext)]
+                break
+
+        # Match: stem is the module path, or stem ends with /module_path
+        # (handles subdirectory prefixes like "bridge/solidlsp"),
+        # or stem is module_path/__init__ or module_path/index.
+        return (
+            stem == module_path
+            or stem.endswith(f"/{module_path}")
+            or stem == f"{module_path}/__init__"
+            or stem.endswith(f"/{module_path}/__init__")
+            or stem == f"{module_path}/index"
+            or stem.endswith(f"/{module_path}/index")
+        )
 
     @staticmethod
     def _filter_imported_symbols(
