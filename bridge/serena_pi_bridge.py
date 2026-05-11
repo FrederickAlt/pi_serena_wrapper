@@ -60,24 +60,44 @@ PACKAGE_ROOT = _BRIDGE_DIR.parent
 class Bridge:
     """Bridge that can start/stop a SolidLSP language server and dispatch tool calls."""
 
+    # File extension → language identifier mapping for per-file dispatch.
+    _EXT_TO_LANGUAGE: dict[str, str] = {
+        ".ts": "typescript",
+        ".tsx": "typescript",
+        ".js": "typescript",
+        ".jsx": "typescript",
+        ".mts": "typescript",
+        ".mjs": "typescript",
+        ".cts": "typescript",
+        ".cjs": "typescript",
+        ".py": "python",
+        ".pyi": "python",
+    }
+
     def __init__(self) -> None:
         self.ls: SolidLanguageServer | None = None
         self.cwd: str | None = None
         self.language: str | None = None
+        self._languages: list[str] = []
+        self._ls_map: dict[str, SolidLanguageServer] = {}
         # Cache the tool contracts for validation
         self._tool_contracts: dict[str, object] | None = None
 
     def init(self, cwd: str) -> dict[str, object]:
-        """Start a language server for *cwd*.
+        """Start language servers for every configured language in *cwd*.
 
         Reads ``.serenaproject.yml`` to determine which language(s) to activate.
-        Falls back to auto-detection (TypeScript > Python > default).
+        If absent, auto-detects the primary language and writes a default config.
+        Starts a language server for **every** configured language, storing them
+        in ``_ls_map`` for per-file dispatch.
         """
         project_root = str(Path(cwd).resolve())
         languages = self._read_languages(project_root)
 
         if not languages:
             languages = self._detect_languages(project_root)
+            # Auto-write .serenaproject.yml if it was absent
+            self._write_languages(project_root, languages)
 
         if not languages:
             raise RuntimeError(
@@ -85,31 +105,49 @@ class Bridge:
                 "Place a .serenaproject.yml with a 'languages' list in the project root."
             )
 
-        lang = Language(languages[0])
+        self._languages = list(languages)
 
         settings = SolidLSPSettings(
             solidlsp_dir=str(Path.home() / ".solidlsp"),
             project_data_path=str(Path(project_root) / ".solidlsp"),
         )
 
-        config = LanguageServerConfig(
-            code_language=lang,
-            encoding="utf-8",
-        )
+        # Start one language server per configured language
+        self._ls_map = {}
+        for lang_name in languages:
+            lang = Language(lang_name)
+            config = LanguageServerConfig(
+                code_language=lang,
+                encoding="utf-8",
+            )
+            ls_instance = SolidLanguageServer.create(config, project_root, solidlsp_settings=settings)
+            ls_instance.start()
+            self._ls_map[str(lang)] = ls_instance
 
-        self.ls = SolidLanguageServer.create(config, project_root, solidlsp_settings=settings)
-        self.ls.start()
+        # Primary (first) language server for project-wide tools
+        self.language = str(Language(languages[0]))
+        self.ls = self._ls_map[self.language]
         self.cwd = project_root
-        self.language = str(lang)
 
-        return {"ok": True, "language": str(lang), "cwd": project_root}
+        return {
+            "ok": True,
+            "language": self.language,
+            "languages": [str(Language(l)) for l in languages],
+            "cwd": project_root,
+        }
 
     def shutdown(self) -> str:
-        """Stop the language server cleanly."""
-        if self.ls is not None:
-            self.ls.stop()
-            self.ls = None
+        """Stop all language servers cleanly."""
+        for ls_instance in self._ls_map.values():
+            try:
+                ls_instance.stop()
+            except Exception:
+                pass
+        self._ls_map = {}
+        self.ls = None
+        self._languages = []
         self.cwd = None
+        self.language = None
         return "OK"
 
     # -- tool dispatch -----------------------------------------------------
@@ -268,11 +306,13 @@ class Bridge:
 
         Each line is ``Kind Name`` with 2 spaces per nesting level.
         *depth* controls how many levels of children to include (0 = top-level only).
+        
+        Dispatches to the correct language server based on file extension.
         """
         relative_path = str(params["relative_path"])
         depth = int(params.get("depth", 0))
-        assert self.ls is not None
-        doc_symbols = self.ls.request_document_symbols(relative_path)
+        ls = self._ls_for_file(relative_path)
+        doc_symbols = ls.request_document_symbols(relative_path)
         return self._format_symbols(doc_symbols.root_symbols, depth, 0)
 
     @staticmethod
@@ -585,11 +625,12 @@ class Bridge:
         Section 2 — "## Symbols": locally-defined symbols with
         ``Kind Name:startLine-endLine`` and 2-space indentation,
         filtered to exclude imported bindings.
+
+        Dispatches to the correct language server based on file extension.
         """
         relative_path = str(params["relative_path"])
         depth = int(params.get("depth", 0))
 
-        assert self.ls is not None
         assert self.cwd is not None
 
         # Read the source file
@@ -598,9 +639,12 @@ class Bridge:
             raise FileNotFoundError(f"File not found: {relative_path}")
         source = abs_path.read_text(encoding="utf-8")
 
+        # Detect language from file extension for per-file dispatch
+        file_language = self._language_for_file(relative_path)
+        ls = self._ls_for_file(relative_path)
+
         # Parse imports via tree-sitter (returns empty list for unsupported languages)
-        language = self.language or ""
-        import_pairs = parse_imports(source, language)  # [(original, binding, module)]
+        import_pairs = parse_imports(source, file_language)  # [(original, binding, module)]
 
         # Build output sections
         sections: list[str] = []
@@ -611,7 +655,7 @@ class Bridge:
             sections.append(imports_section)
 
         # Get document symbols and filter out imported names
-        doc_symbols = self.ls.request_document_symbols(relative_path)
+        doc_symbols = ls.request_document_symbols(relative_path)
         imported_names: set[str] = {binding for _, binding, _ in import_pairs}
         filtered_root_symbols = self._filter_imported_symbols(
             doc_symbols.root_symbols, imported_names
@@ -929,6 +973,37 @@ class Bridge:
                 or list(root.glob("setup.cfg"))):
             return ["python"]
         return ["typescript"]  # safe default
+
+    @staticmethod
+    def _write_languages(project_root: str, languages: list[str]) -> None:
+        """Write a default ``.serenaproject.yml`` if none exists."""
+        config_path = Path(project_root) / ".serenaproject.yml"
+        if config_path.is_file():
+            return  # already exists
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump({"languages": languages}, f, default_flow_style=False)
+
+    def _language_for_file(self, relative_path: str) -> str:
+        """Return the language identifier for *relative_path* based on extension.
+
+        Falls back to the primary language if the extension is unrecognised.
+        """
+        suffix = Path(relative_path).suffix.lower()
+        if suffix in self._EXT_TO_LANGUAGE:
+            return self._EXT_TO_LANGUAGE[suffix]
+        return self.language or ""
+
+    def _ls_for_file(self, relative_path: str) -> SolidLanguageServer:
+        """Return the language server instance appropriate for *relative_path*.
+
+        Falls back to the primary server if no matching server is registered.
+        """
+        language = self._language_for_file(relative_path)
+        if language in self._ls_map:
+            return self._ls_map[language]
+        # Fallback to primary server
+        assert self.ls is not None
+        return self.ls
 
 
 # ---------------------------------------------------------------------------

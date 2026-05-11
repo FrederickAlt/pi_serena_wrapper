@@ -4,6 +4,7 @@
  */
 
 import { mkdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -761,6 +762,163 @@ async function testGetDocumentOverviewWithAliases(): Promise<void> {
   await client.shutdown();
 }
 
+// -- mixed-language fixtures (Issue #17) -----------------------------------
+
+async function writeMixedLanguageFixture(): Promise<void> {
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(fixtureRoot, { recursive: true });
+  await mkdir(path.join(fixtureRoot, "src"), { recursive: true });
+  await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ type: "module" }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "tsconfig.json"), JSON.stringify({
+    compilerOptions: { target: "ES2020", module: "ESNext", moduleResolution: "Node", strict: true },
+    include: ["src/**/*.ts"],
+  }, null, 2) + "\n");
+
+  // .serenaproject.yml with BOTH languages
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - typescript\n  - python\n",
+  );
+
+  // TypeScript file with imports and local symbols
+  await writeFile(path.join(fixtureRoot, "src", "lib_utils.ts"), [
+    "export function validate(data: string): boolean {",
+    "  return data.length > 0;",
+    "}",
+    "",
+  ].join("\n") + "\n");
+
+  await writeFile(path.join(fixtureRoot, "src", "index.ts"), [
+    "import { validate } from './lib_utils';",
+    "import { useState } from 'react';",
+    "",
+    "export class MyService {",
+    "  handle(data: string): boolean {",
+    "    return validate(data);",
+    "  }",
+    "}",
+    "",
+    "export function helper(): void {",
+    "  console.log('helper');",
+    "}",
+    "",
+  ].join("\n") + "\n");
+
+  // Python file with imports and local symbols
+  await writeFile(path.join(fixtureRoot, "py_utils.py"), [
+    "def validate(data: str) -> bool:",
+    "    return len(data) > 0",
+    "",
+  ].join("\n") + "\n");
+
+  await writeFile(path.join(fixtureRoot, "main.py"), [
+    "from py_utils import validate",
+    "import os",
+    "",
+    "class UserService:",
+    "    def create_user(self, name: str) -> None:",
+    "        validate(name)",
+    "",
+    "def helper():",
+    "    print('helper')",
+    "",
+  ].join("\n") + "\n");
+}
+
+async function testMixedLanguageOverview(): Promise<void> {
+  await writeMixedLanguageFixture();
+
+  const initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Mixed init should succeed: ${JSON.stringify(initResult)}`);
+  assert(Array.isArray(initResult.languages), `Should return languages array: ${JSON.stringify(initResult)}`);
+  assert((initResult.languages as string[]).includes("typescript"), "Should include typescript");
+  assert((initResult.languages as string[]).includes("python"), "Should include python");
+  console.log(`Mixed init OK: languages=${JSON.stringify(initResult.languages)}`);
+
+  await new Promise(r => setTimeout(r, 5000));
+
+  // --- get_document_overview on TypeScript file ---
+  const tsOverview = await client.callTool("get_document_overview", {
+    relative_path: "src/index.ts",
+    depth: 1,
+  }) as string;
+
+  console.log("TS overview in mixed project:\n" + tsOverview);
+
+  // TypeScript file should have proper imports and symbols (not Python f-string fragments)
+  assert(tsOverview.includes("## Imports"), "TS file should have Imports section");
+  assert(tsOverview.includes("## Symbols"), "TS file should have Symbols section");
+  assert(tsOverview.includes("./lib_utils"), "Should show internal TS module");
+  assert(tsOverview.includes("[internal"), "Should have [internal] classification");
+  assert(tsOverview.includes("MyService"), "MyService should be in Symbols");
+  assert(tsOverview.includes("helper"), "helper should be in Symbols");
+  assert(tsOverview.includes("handle"), "depth=1 should include class member 'handle'");
+
+  // Must NOT contain Python f-string artifacts or wrong-language symbols
+  assert(!tsOverview.includes("f-string"), "TS overview should not contain f-string fragments");
+
+  console.log("  => TS overview in mixed project OK");
+
+  // --- get_document_overview on Python file ---
+  const pyOverview = await client.callTool("get_document_overview", {
+    relative_path: "main.py",
+    depth: 1,
+  }) as string;
+
+  console.log("Python overview in mixed project:\n" + pyOverview);
+
+  // Python file should have proper imports and symbols (real Python classes/functions)
+  assert(pyOverview.includes("## Imports"), "Python file should have Imports section");
+  assert(pyOverview.includes("## Symbols"), "Python file should have Symbols section");
+  assert(pyOverview.includes("py_utils"), "Should show internal Python module");
+  assert(/\[internal/.test(pyOverview), "Should have [internal] classification");
+  assert(pyOverview.includes("UserService"), "UserService should be in Symbols");
+  assert(pyOverview.includes("helper"), "helper should be in Symbols");
+  assert(pyOverview.includes("create_user"), "depth=1 should include class method 'create_user'");
+
+  // Python symbols should be proper LSP kinds (Class, Function), not f-string fragments
+  assert(/Class UserService:\d+-\d+/.test(pyOverview), "UserService should be Class kind");
+  assert(/Function helper:\d+-\d+/.test(pyOverview), "helper should be Function kind");
+
+  console.log("  => Python overview in mixed project OK");
+
+  // --- get_document_symbols also dispatches correctly ---
+  const tsSymbols = await client.callTool("get_document_symbols", {
+    relative_path: "src/index.ts",
+    depth: 1,
+  }) as string;
+  assert(typeof tsSymbols === "string", "TS get_document_symbols should return string");
+  assert(tsSymbols.includes("MyService"), "TS symbols should include MyService");
+
+  const pySymbols = await client.callTool("get_document_symbols", {
+    relative_path: "main.py",
+    depth: 1,
+  }) as string;
+  assert(typeof pySymbols === "string", "Python get_document_symbols should return string");
+  assert(pySymbols.includes("UserService"), "Python symbols should include UserService");
+
+  console.log("  => get_document_symbols dispatch OK");
+
+  await client.shutdown();
+
+  // --- Auto-detect and write .serenaproject.yml on first init ---
+  await writeTypeScriptFixture(); // creates tsconfig.json + src/index.ts
+  // Remove any existing .serenaproject.yml to test auto-write
+  try {
+    await rm(path.join(fixtureRoot, ".serenaproject.yml"), { force: true });
+  } catch { /* ok */ }
+
+  const autoInitResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(autoInitResult.ok === true, `Auto-detect init should succeed: ${JSON.stringify(autoInitResult)}`);
+
+  // Check that .serenaproject.yml was created
+  assert(existsSync(path.join(fixtureRoot, ".serenaproject.yml")), "should auto-write .serenaproject.yml");
+
+  console.log(`Auto-detect init OK: wrote .serenaproject.yml`);
+
+  await client.shutdown();
+}
+
 // -- main ------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -786,6 +944,9 @@ async function run(): Promise<void> {
 
   console.log("\n=== get_document_overview with aliases (Issue #16) ===");
   await testGetDocumentOverviewWithAliases();
+
+  console.log("\n=== mixed-language dispatch (Issue #17) ===");
+  await testMixedLanguageOverview();
 
   console.log(`\nPASS jsonl regression: ${fixtureRoot}`);
 }
