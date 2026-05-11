@@ -643,29 +643,56 @@ class Bridge:
         if workspace_edit is None:
             return "Error: rename not supported by this language server"
 
-        # Apply the workspace edit to each changed file
-        changes = workspace_edit.get("changes") or {}
-        for uri, edits in changes.items():
-            # Convert URI to absolute path, then to relative path
+        # Apply the workspace edit to each changed file.
+        # LSP servers may use either the legacy `changes` dict (uri -> TextEdit[])
+        # or the modern `documentChanges` array (TextDocumentEdit[]).
+        applied = 0
+        changes_dict: dict[str, list[dict[str, object]]] = workspace_edit.get("changes") or {}
+        doc_changes: list[dict[str, object]] = workspace_edit.get("documentChanges") or []
+
+        if not changes_dict and not doc_changes:
+            return f"Error: workspace edit for rename of {name_path!r} is empty"
+
+        # Helper to apply edits for a given URI + edits list
+        def _apply_edits(uri_str: str, edits: list[dict[str, object]]) -> str:
             try:
-                abs_path = PathUtils.uri_to_path(uri)
+                abs_path = PathUtils.uri_to_path(uri_str)
             except Exception:
                 # Fallback: parse the URI manually
-                parsed = urllib.parse.urlparse(uri)
+                parsed = urllib.parse.urlparse(uri_str)
                 abs_path = urllib.parse.unquote(parsed.path)
             try:
                 target_relative = os.path.relpath(abs_path, rename_ls.repository_root_path)
             except ValueError:
                 target_relative = abs_path
 
-            # Determine which LS handles this file
             file_ls = self._ls_for_file(target_relative)
-
-            # Open the file buffer, apply edits, then persist to disk
             with file_ls.open_file(target_relative) as file_buffer:
                 file_ls.apply_text_edits_to_file(target_relative, edits)
                 abs_file_path = Path(file_ls.repository_root_path) / target_relative
                 abs_file_path.write_text(file_buffer.contents, encoding="utf-8")
+            return target_relative
+
+        # Phase 1 — legacy `changes` format
+        for uri, edits in changes_dict.items():
+            target_relative = _apply_edits(uri, edits)
+            applied += 1
+
+        # Phase 2 — modern `documentChanges` format
+        for dc_entry in doc_changes:
+            # Each entry is a TextDocumentEdit (or optionally CreateFile/RenameFile/DeleteFile).
+            # We only handle TextDocumentEdit.
+            if "textDocument" not in dc_entry:
+                continue
+            uri = str(dc_entry["textDocument"]["uri"])
+            edits = dc_entry.get("edits")
+            if not edits or not isinstance(edits, list):
+                continue
+            target_relative = _apply_edits(uri, edits)
+            applied += 1
+
+        if applied == 0:
+            return f"Error: no files were modified during rename of {name_path!r} to {new_name!r}"
 
         return f"renamed {name_path} to {new_name}"
 

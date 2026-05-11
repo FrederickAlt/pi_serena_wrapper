@@ -1048,6 +1048,120 @@ async function testMixedLanguageOverview(): Promise<void> {
 
 // -- lazy language server start (Issue #18) ----------------------------------
 
+async function testRenameSymbol(): Promise<void> {
+  // --- TypeScript fixture ---
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(path.join(fixtureRoot, "src"), { recursive: true });
+  await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ type: "module" }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "tsconfig.json"), JSON.stringify({
+    compilerOptions: { target: "ES2020", module: "ESNext", moduleResolution: "Node", strict: true },
+    include: ["src/**/*.ts"],
+  }, null, 2) + "\n");
+  await writeFile(path.join(fixtureRoot, "src", "index.ts"), [
+    "export function originalName(): string {",
+    "  return 'hello';",
+    "}",
+    "",
+    "export function helper(): void {",
+    "  console.log(originalName());",
+    "}",
+    "",
+  ].join("\n") + "\n");
+
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - typescript\n",
+  );
+  let initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
+  console.log(`TypeScript rename init OK: language=${initResult.language}`);
+
+  await new Promise(r => setTimeout(r, 4000));
+
+  // Rename a function
+  const result = await client.callTool("rename_symbol", {
+    name_path: "originalName",
+    new_name: "renamedFunction",
+  }) as string;
+  console.log(`rename_symbol result: ${result}`);
+  assert(typeof result === "string", "rename_symbol should return a string");
+  assert(result.includes("renamed"), `rename should succeed, got: ${result}`);
+
+  // Verify the file was actually changed
+  const { readFile } = await import("node:fs/promises");
+  const content = await readFile(path.join(fixtureRoot, "src", "index.ts"), "utf-8");
+  assert(!content.includes("originalName"), "originalName should be renamed away");
+  assert(content.includes("renamedFunction"), "renamedFunction should appear in file");
+  // Verify the reference in helper() was also updated
+  assert(content.includes("renamedFunction()"), "call site in helper() should also be renamed");
+  console.log("  => rename applied to file OK (definition + call site)");
+
+  // Rename back to original
+  const result2 = await client.callTool("rename_symbol", {
+    name_path: "renamedFunction",
+    new_name: "originalName",
+  }) as string;
+  console.log(`rename back result: ${result2}`);
+  assert(result2.includes("renamed"), `rename back should succeed, got: ${result2}`);
+
+  const content2 = await readFile(path.join(fixtureRoot, "src", "index.ts"), "utf-8");
+  assert(content2.includes("originalName"), "originalName should be restored");
+  assert(!content2.includes("renamedFunction"), "renamedFunction should be gone");
+  console.log("  => rename back to original OK");
+
+  await client.shutdown();
+
+  // --- Python fixture ---
+  await rm(fixtureRoot, { recursive: true, force: true });
+  await mkdir(fixtureRoot, { recursive: true });
+  await writeFile(
+    path.join(fixtureRoot, ".serenaproject.yml"),
+    "languages:\n  - python\n",
+  );
+  await writeFile(path.join(fixtureRoot, "main.py"), [
+    "def original_name() -> str:",
+    "    return 'hello'",
+    "",
+    "def helper():",
+    "    print(original_name())",
+    "",
+  ].join("\n") + "\n");
+
+  initResult = await client.init(fixtureRoot) as Record<string, unknown>;
+  assert(initResult.ok === true, `Python rename init should succeed: ${JSON.stringify(initResult)}`);
+  console.log(`Python rename init OK: language=${initResult.language}`);
+
+  await new Promise(r => setTimeout(r, 4000));
+
+  const pyResult = await client.callTool("rename_symbol", {
+    name_path: "original_name",
+    new_name: "renamed_fn",
+  }) as string;
+  console.log(`Python rename_symbol result: ${pyResult}`);
+  assert(typeof pyResult === "string", "rename_symbol should return a string");
+  assert(pyResult.includes("renamed"), `Python rename should succeed, got: ${pyResult}`);
+
+  const pyContent = await readFile(path.join(fixtureRoot, "main.py"), "utf-8");
+  assert(!pyContent.includes("original_name"), "original_name should be renamed away");
+  assert(pyContent.includes("renamed_fn"), "renamed_fn should appear in file");
+  assert(pyContent.includes("renamed_fn()"), "call site should also be renamed");
+  console.log("  => Python rename applied OK");
+
+  // Rename back
+  const pyResult2 = await client.callTool("rename_symbol", {
+    name_path: "renamed_fn",
+    new_name: "original_name",
+  }) as string;
+  assert(pyResult2.includes("renamed"), `Python rename back should succeed, got: ${pyResult2}`);
+
+  const pyContent2 = await readFile(path.join(fixtureRoot, "main.py"), "utf-8");
+  assert(pyContent2.includes("original_name"), "original_name should be restored");
+  assert(!pyContent2.includes("renamed_fn"), "renamed_fn should be gone");
+  console.log("  => Python rename back OK");
+
+  await client.shutdown();
+}
+
 async function testLazyLanguageStart(): Promise<void> {
   // Reuse the mixed-language fixture (TS + Python files on disk)
   await writeMixedLanguageFixture();
@@ -1217,6 +1331,9 @@ async function run(): Promise<void> {
 
   console.log("\n=== get_document_overview cross-dir import (Issue #19) ===");
   await testGetDocumentOverviewCrossDir();
+
+  console.log("\n=== rename_symbol (Issue #31) ===");
+  await testRenameSymbol();
 
   console.log("\n=== lazy language server start (Issue #18) ===");
   await testLazyLanguageStart();

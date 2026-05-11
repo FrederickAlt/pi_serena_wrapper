@@ -2531,7 +2531,8 @@ class SolidLanguageServer(ABC):
     ) -> ls_types.WorkspaceEdit | None:
         """
         Retrieve a WorkspaceEdit for renaming the symbol at the given location to the new name.
-        Does not apply the edit, just retrieves it. In order to actually rename the symbol, call apply_workspace_edit.
+        Does not apply the edit, just retrieves it. The returned WorkspaceEdit may use either
+        the legacy ``changes`` dict or the modern ``documentChanges`` array format.
 
         :param relative_file_path: The relative path to the file containing the symbol
         :param line: The 0-indexed line number of the symbol
