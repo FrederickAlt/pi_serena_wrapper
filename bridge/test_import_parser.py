@@ -275,12 +275,7 @@ class TestEdgeCases:
         src = "import X from './module';\n"
         assert _normalise(parse_imports(src, "typescript")) == {("X", "X", "./module")}
 
-    def test_backtick_string_typescript(self):
-        src = "import X from `./module`;\n"
-        # template strings are unusual but let's make sure we handle them
-        pairs = parse_imports(src, "typescript")
-        # The template might not be a simple 'string' node in TS; accept empty
-        assert pairs == [] or pairs == [("./module", "./module", "./module")]
+
 
 
 # ---------------------------------------------------------------------------

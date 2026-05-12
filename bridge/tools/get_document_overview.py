@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import formatting
 import import_resolver
 from import_parser import parse_imports
+from path_validation import validate_project_path
 from tool_context import ToolContext
 
 
@@ -26,13 +25,13 @@ def get_document_overview(params: dict[str, object], ctx: ToolContext) -> str:
     else:
         included_kinds = set(ctx.overview_kinds)
 
-    abs_path = Path(ctx.cwd) / relative_path
+    abs_path = validate_project_path(relative_path, ctx.cwd)
     if not abs_path.is_file():
         raise FileNotFoundError(f"File not found: {relative_path}")
     source = abs_path.read_text(encoding="utf-8")
 
-    file_language = ctx.language_for_file(relative_path)  # type: ignore[call-arg]
-    ls = ctx.ls_for_file(relative_path)  # type: ignore[call-arg]
+    file_language = ctx.language_for_file(relative_path)
+    ls = ctx.ls_for_file(relative_path)
 
     import_pairs = parse_imports(source, file_language)
 

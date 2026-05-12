@@ -448,7 +448,7 @@ async function testGetType(): Promise<void> {
   console.log(`Init OK: language=${initResult.language}`);
 
   // Give LSP a moment to index
-  await new Promise(r => setTimeout(r, 5000));
+  await new Promise(r => setTimeout(r, 2000));
 
   // --- exact name_path returns compact symbol info ---
   const typeResult = await client.callTool("get_type", {
@@ -522,7 +522,7 @@ async function testGetDocumentOverview(): Promise<void> {
   console.log(`TypeScript init OK: language=${initResult.language}`);
 
   // Give LSP a moment to index
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise(r => setTimeout(r, 1500));
 
   // --- Call get_document_overview on the main file ---
   const tsOverview = await client.callTool("get_document_overview", {
@@ -588,7 +588,7 @@ async function testGetDocumentOverview(): Promise<void> {
   assert(initResult.ok === true, `Python init should succeed: ${JSON.stringify(initResult)}`);
   console.log(`Python init OK: language=${initResult.language}`);
 
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise(r => setTimeout(r, 1500));
 
   const pyOverview = await client.callTool("get_document_overview", {
     relative_path: "main.py",
@@ -719,7 +719,7 @@ async function testGetDocumentOverviewCrossDir(): Promise<void> {
   let initResult = await client.init(fixtureRoot) as Record<string, unknown>;
   assert(initResult.ok === true, `TS cross-dir init should succeed: ${JSON.stringify(initResult)}`);
 
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise(r => setTimeout(r, 1500));
 
   const tsOverview = await client.callTool("get_document_overview", {
     relative_path: "scripts/test.ts",
@@ -746,7 +746,7 @@ async function testGetDocumentOverviewCrossDir(): Promise<void> {
   initResult = await client.init(fixtureRoot) as Record<string, unknown>;
   assert(initResult.ok === true, `Python cross-dir init should succeed: ${JSON.stringify(initResult)}`);
 
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise(r => setTimeout(r, 1500));
 
   const pyOverview = await client.callTool("get_document_overview", {
     relative_path: "scripts/test.py",
@@ -778,7 +778,7 @@ async function testGetDocumentOverviewWithAliases(): Promise<void> {
   let initResult = await client.init(fixtureRoot) as Record<string, unknown>;
   assert(initResult.ok === true, `TS alias init should succeed: ${JSON.stringify(initResult)}`);
 
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise(r => setTimeout(r, 1500));
 
   const tsOverview = await client.callTool("get_document_overview", {
     relative_path: "src/index.ts",
@@ -817,7 +817,7 @@ async function testGetDocumentOverviewWithAliases(): Promise<void> {
   initResult = await client.init(fixtureRoot) as Record<string, unknown>;
   assert(initResult.ok === true, `Python alias init should succeed: ${JSON.stringify(initResult)}`);
 
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise(r => setTimeout(r, 1500));
 
   const pyOverview = await client.callTool("get_document_overview", {
     relative_path: "main.py",
@@ -979,7 +979,7 @@ async function testMixedLanguageOverview(): Promise<void> {
   assert((initResult.languages as string[]).includes("python"), "Should include python");
   console.log(`Mixed init OK: languages=${JSON.stringify(initResult.languages)}`);
 
-  await new Promise(r => setTimeout(r, 5000));
+  await new Promise(r => setTimeout(r, 2000));
 
   // --- get_document_overview on TypeScript file ---
   const tsOverview = await client.callTool("get_document_overview", {
@@ -1076,7 +1076,7 @@ async function testRenameSymbol(): Promise<void> {
   assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
   console.log(`TypeScript rename init OK: language=${initResult.language}`);
 
-  await new Promise(r => setTimeout(r, 4000));
+  await new Promise(r => setTimeout(r, 2000));
 
   // Rename a function
   const result = await client.callTool("rename_symbol", {
@@ -1131,7 +1131,7 @@ async function testRenameSymbol(): Promise<void> {
   assert(initResult.ok === true, `Python rename init should succeed: ${JSON.stringify(initResult)}`);
   console.log(`Python rename init OK: language=${initResult.language}`);
 
-  await new Promise(r => setTimeout(r, 4000));
+  await new Promise(r => setTimeout(r, 2000));
 
   const pyResult = await client.callTool("rename_symbol", {
     name_path: "original_name",
@@ -1181,7 +1181,7 @@ async function testLazyLanguageStart(): Promise<void> {
   assert(langs1[0] === "typescript", `Should be typescript only: ${JSON.stringify(langs1)}`);
   console.log(`Init (TS only) OK: languages=${JSON.stringify(langs1)}`);
 
-  await new Promise(r => setTimeout(r, 5000));
+  await new Promise(r => setTimeout(r, 2000));
 
   // Call get_document_overview on a .py file → should lazily start Python
   const pyOverview = await client.callTool("get_document_overview", {
@@ -1270,7 +1270,7 @@ async function testImportClassificationNameCollision(): Promise<void> {
   assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
   console.log(`Name collision init OK: language=${initResult.language}`);
 
-  await new Promise(r => setTimeout(r, 4000));
+  await new Promise(r => setTimeout(r, 2000));
 
   const overview = await client.callTool("get_document_overview", {
     relative_path: "main.py",
@@ -1370,7 +1370,7 @@ async function testBug1FallbackOnEmptyWorkspaceSymbol(): Promise<void> {
   assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
   console.log(`Bug 1 init OK: language=${initResult.language}`);
 
-  await new Promise(r => setTimeout(r, 4000));
+  await new Promise(r => setTimeout(r, 2000));
 
   // First verify the symbol exists via find_symbol (full tree)
   const fsResult = await client.callTool("find_symbol", {
@@ -1409,7 +1409,7 @@ async function testBug2ImportConsistency(): Promise<void> {
   assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
   console.log(`Bug 2 init OK: language=${initResult.language}`);
 
-  await new Promise(r => setTimeout(r, 4000));
+  await new Promise(r => setTimeout(r, 2000));
 
   // Get overviews for both files
   const overviewA = await client.callTool("get_document_overview", {
@@ -1468,7 +1468,7 @@ async function testRestartLsp(): Promise<void> {
   assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
   console.log(`Init OK: language=${initResult.language}`);
 
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise(r => setTimeout(r, 1500));
 
   // 1. Confirm tools work before restart
   const before = await client.callTool("find_symbol", { name_path: "MyClass" }) as FindSymbolResult;
@@ -1484,7 +1484,7 @@ async function testRestartLsp(): Promise<void> {
   assert(typeof restartResult.cwd === "string", `Should return cwd: ${JSON.stringify(restartResult)}`);
   console.log(`restart_lsp OK: language=${restartResult.language}, cwd=${restartResult.cwd}`);
 
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise(r => setTimeout(r, 1500));
 
   // 3. Confirm tools still work after restart
   const after = await client.callTool("find_symbol", { name_path: "MyClass" }) as FindSymbolResult;

@@ -25,7 +25,7 @@ def get_references(params: dict[str, object], ctx: ToolContext) -> list[dict[str
         ref_col = ref["range"]["start"]["character"]
         ref_end_line = ref["range"]["end"]["line"]
 
-        ref_file_ls = ctx.ls_for_file(ref_rel)  # type: ignore[call-arg]
+        ref_file_ls = ctx.ls_for_file(ref_rel)
         sym = ref_file_ls.request_symbol_at_location(ref_rel, ref_line, ref_col)
         if sym is not None:
             try:

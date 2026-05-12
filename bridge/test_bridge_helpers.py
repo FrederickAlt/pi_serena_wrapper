@@ -18,7 +18,6 @@ if str(_BRIDGE_DIR) not in sys.path:
 import pytest
 
 from solidlsp.ls_types import UnifiedSymbolInformation, SymbolKind
-from serena_pi_bridge import Bridge
 from import_resolver import _resolve_python_module, _verify_module_file_match
 import formatting
 

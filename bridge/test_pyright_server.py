@@ -1,4 +1,10 @@
-"""Unit tests for PyrightServer — specifically is_ignored_dirname (Issue #26)."""
+"""Unit tests for PyrightServer — specifically is_ignored_dirname (Issue #26).
+
+is_ignored_dirname is a pure method that only accesses class-level
+constants (_ALWAYS_IGNORED_DIRS and the subclass-specific list).
+We can test it without constructing a full PyrightServer (which would
+needlessly create a LanguageServerProcess, caches, and pathspec).
+"""
 
 from __future__ import annotations
 
@@ -10,28 +16,15 @@ _BRIDGE_DIR = Path(__file__).resolve().parent
 if str(_BRIDGE_DIR) not in sys.path:
     sys.path.insert(0, str(_BRIDGE_DIR))
 
-import tempfile
 import pytest
 
-from solidlsp.ls_config import Language, LanguageServerConfig
-from solidlsp.settings import SolidLSPSettings
 from solidlsp.language_servers.pyright_server import PyrightServer
 
 
 @pytest.fixture
-def pyright_server():
-    """Create a PyrightServer instance pointed at a temp directory (server not started)."""
-    with tempfile.TemporaryDirectory() as tmp:
-        config = LanguageServerConfig(
-            code_language=Language("python"),
-            encoding="utf-8",
-        )
-        settings = SolidLSPSettings(
-            solidlsp_dir=str(Path(tmp) / ".solidlsp"),
-            project_data_path=str(Path(tmp) / ".solidlsp"),
-        )
-        server = PyrightServer(config, str(tmp), settings)
-        yield server
+def pyright_server() -> PyrightServer:
+    """Construct a PyrightServer without heavy init — is_ignored_dirname is pure."""
+    return object.__new__(PyrightServer)
 
 
 class TestIsIgnoredDirname:

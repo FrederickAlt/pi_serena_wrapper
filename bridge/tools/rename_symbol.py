@@ -43,7 +43,7 @@ def rename_symbol(params: dict[str, object], ctx: ToolContext) -> str:
         except ValueError:
             target_relative = abs_path
 
-        file_ls = ctx.ls_for_file(target_relative)  # type: ignore[call-arg]
+        file_ls = ctx.ls_for_file(target_relative)
         with file_ls.open_file(target_relative) as file_buffer:
             file_ls.apply_text_edits_to_file(target_relative, edits)
             abs_file_path = Path(file_ls.repository_root_path) / target_relative

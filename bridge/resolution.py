@@ -48,7 +48,7 @@ def resolve_tool_symbol(
 
     relative_path = str(params["relative_path"]) if params.get("relative_path") is not None else None
 
-    ls_list = ctx.ls_list_for(relative_path)  # type: ignore[call-arg]
+    ls_list = ctx.ls_list_for(relative_path)
     symbol = resolve_unique_symbol_via_workspace(
         ls_list, name_path_str, relative_path,
         exclude_dot_paths=ctx.exclude_dot_paths,
@@ -67,7 +67,7 @@ def resolve_tool_symbol(
     if not file_path:
         raise ValueError(f"Symbol {name_path_str!r} has no relativePath in location.")
 
-    ls_instance = ctx.ls_for_file(file_path)  # type: ignore[call-arg]
+    ls_instance = ctx.ls_for_file(file_path)
 
     return ResolvedSymbol(
         symbol=symbol,

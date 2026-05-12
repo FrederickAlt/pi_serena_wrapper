@@ -5,8 +5,8 @@ from __future__ import annotations
 import formatting
 import snippet_filter
 
-from name_path import NamePathMatcher, compute_name_path, _is_dot_path
-from solidlsp.ls_types import SymbolKind, UnifiedSymbolInformation
+from name_path import NamePathMatcher, collect_matching_symbols, compute_name_path
+from solidlsp.ls_types import SymbolKind
 from tool_context import ToolContext
 
 
@@ -26,51 +26,46 @@ def find_symbol(params: dict[str, object], ctx: ToolContext) -> list[dict[str, o
     code_snippet = params.get("code_snippet")
     if code_snippet is not None:
         code_snippet = str(code_snippet)
-    kinds: list[int] | None = None
+    kinds_set: set[int] | None = None
     raw_kinds = params.get("kinds")
     if raw_kinds is not None and isinstance(raw_kinds, list):
-        kinds = list(formatting.parse_kinds(raw_kinds))  # type: ignore[arg-type]
+        kinds_set = formatting.parse_kinds(raw_kinds)  # type: ignore[arg-type]
     max_matches = int(params.get("max_matches", 10))
 
     matcher = NamePathMatcher(name_path_str)
+    ls_instances = ctx.ls_list_for(relative_path)
 
-    ls_instances = ctx.ls_list_for(relative_path)  # type: ignore[call-arg]
-
-    matched: list[UnifiedSymbolInformation] = []
+    # 1. Walk the full symbol tree and collect matches by name_path pattern.
+    matched: list[tuple[str, object]] = []
     for ls in ls_instances:
-        tree = ls.request_full_symbol_tree(
-            within_relative_path=relative_path if relative_path else None
+        matched.extend(
+            collect_matching_symbols(
+                ls, matcher, relative_path, ctx.exclude_dot_paths,
+            )
         )
-        flat_symbols = list(formatting.flatten_tree(tree))
-        for sym in flat_symbols:
-            if ctx.exclude_dot_paths:
-                loc = sym.get("location") or {}
-                rel = loc.get("relativePath")
-                if rel and _is_dot_path(str(rel)):
-                    continue
-            np = compute_name_path(sym)
-            if matcher.matches(np):
-                matched.append(sym)
 
+    # 2. Apply kinds filter.
+    if kinds_set is not None:
+        matched = [(np, s) for np, s in matched if s["kind"] in kinds_set]
+
+    # 3. Apply code-snippet filter via rg.
     if code_snippet is not None:
-        matched = snippet_filter.filter_by_snippet(
-            matched, code_snippet,
+        filtered = snippet_filter.filter_by_snippet(
+            [s for _, s in matched], code_snippet,
             cwd=ctx.cwd,
             within_path=str(relative_path) if relative_path else None,
         )
+        matched = [(compute_name_path(s), s) for s in filtered]
 
-    if kinds is not None:
-        kinds_set = set(kinds)
-        matched = [s for s in matched if s["kind"] in kinds_set]
-
+    # 4. Truncate to max_matches (with sentinel).
     truncated = False
     if max_matches != -1 and len(matched) > max_matches:
         truncated = True
         matched = matched[:max_matches]
 
+    # 5. Format results.
     result_symbols: list[dict[str, object]] = []
-    for sym in matched:
-        np = compute_name_path(sym)
+    for np, sym in matched:
         kind_name = SymbolKind(sym["kind"]).name
         loc_str = formatting.format_location(sym)
         result_symbols.append({

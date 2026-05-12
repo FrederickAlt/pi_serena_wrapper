@@ -21,8 +21,10 @@
    the search runs project-wide. The only exception is `get_document_overview`, which requires a relative_path
    because it operates on a single file.
 
-   The bridge canonicalises relative_path before passing it to the LSP:
-   it converts to project-root-relative and checks the file exists on disk.
+   The bridge validates relative_path before use: it resolves the path
+   against the project root, enforces containment (rejecting absolute-path
+   bypass, ``..`` traversal, and symlink escapes), and checks the file
+   exists on disk.
 
 ## get_document_overview
 

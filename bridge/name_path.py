@@ -186,6 +186,47 @@ def _disambiguate(
     )
 
 
+def collect_matching_symbols(
+    ls: SolidLanguageServer,
+    matcher: NamePathMatcher,
+    relative_path: str | None = None,
+    exclude_dot_paths: bool = False,
+) -> list[tuple[str, UnifiedSymbolInformation]]:
+    """Return ``(name_path, symbol)`` for every symbol in the full tree that
+    matches *matcher*.
+
+    Shared by :func:`find_symbol` (which adds code-snippet / kinds /
+    max-matches filtering) and :func:`resolve_unique_symbol` (which routes
+    results through :func:`_disambiguate`).
+
+    File and Package nodes are skipped — they match too broadly.
+    Dot-prefixed directories (``.venv``, ``.git``, etc.) are optionally
+    excluded.
+    """
+    from solidlsp.ls_types import SymbolKind
+    import formatting
+
+    tree = ls.request_full_symbol_tree(within_relative_path=relative_path)
+    matched: list[tuple[str, UnifiedSymbolInformation]] = []
+
+    for sym in formatting.flatten_tree(tree):
+        kind = sym.get("kind")
+        if kind is not None and kind in (SymbolKind.File, SymbolKind.Package):
+            continue
+
+        if exclude_dot_paths:
+            loc = sym.get("location") or {}
+            rel_path = loc.get("relativePath")
+            if rel_path and _is_dot_path(str(rel_path)):
+                continue
+
+        np = compute_name_path(sym)
+        if matcher.matches(np):
+            matched.append((np, sym))
+
+    return matched
+
+
 def resolve_unique_symbol(
     ls: SolidLanguageServer,
     name_path: str,
@@ -213,38 +254,12 @@ def resolve_unique_symbol(
     if not name_path.strip():
         raise SymbolResolutionError(name_path, "name_path must not be empty or whitespace-only")
 
-    from solidlsp.ls_types import SymbolKind  # noqa: F811
-
-    tree = ls.request_full_symbol_tree(within_relative_path=relative_path)
-
-    # Flatten the tree, skipping File and Package nodes in the result set
-    # (they always match too broadly and are never what callers want to resolve).
-    candidates: dict[str, list[UnifiedSymbolInformation]] = {}
     matcher = NamePathMatcher(name_path)
+    matched = collect_matching_symbols(ls, matcher, relative_path, exclude_dot_paths)
 
-    def _collect(symbol: UnifiedSymbolInformation) -> None:
-        kind = symbol.get("kind")
-        if kind is not None and kind in (SymbolKind.File, SymbolKind.Package):
-            for child in symbol.get("children", []):
-                _collect(child)
-            return
-
-        # Apply dot-path filtering if enabled
-        if exclude_dot_paths:
-            loc = symbol.get("location") or {}
-            rel_path = loc.get("relativePath")
-            if rel_path and _is_dot_path(str(rel_path)):
-                return
-
-        computed = compute_name_path(symbol)
-        if matcher.matches(computed):
-            candidates.setdefault(computed, []).append(symbol)
-
-        for child in symbol.get("children", []):
-            _collect(child)
-
-    for root in tree:
-        _collect(root)
+    candidates: dict[str, list[UnifiedSymbolInformation]] = {}
+    for np, sym in matched:
+        candidates.setdefault(np, []).append(sym)
 
     return _disambiguate(candidates, name_path)
 
