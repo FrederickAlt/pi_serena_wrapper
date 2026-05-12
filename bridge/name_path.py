@@ -426,4 +426,12 @@ def resolve_unique_symbol_via_workspace(
             if matcher.matches(computed):
                 candidates.setdefault(computed, []).append(full_sym)
 
+        # If workspace/symbol returned results but none matched after full
+        # resolution (e.g. parent-chain difference, location mismatch), fall
+        # back to the complete tree scan so the symbol isn't silently missed.
+        if not candidates:
+            _merge_fallback_candidates(
+                candidates, ls, name_path, relative_path, exclude_dot_paths
+            )
+
     return _disambiguate(candidates, name_path)

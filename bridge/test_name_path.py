@@ -449,6 +449,97 @@ class TestResolveUniqueSymbolViaWorkspace:
         assert result["name"] == "helper"
         assert full_tree_called[0], "Full tree fallback should have been called when workspace/symbol returned None"
 
+    def test_falls_back_when_workspace_returns_non_matching_results(self):
+        """When workspace/symbol returns candidates but none match after full
+        resolution (e.g. parent-chain mismatch), fall back to full tree.
+
+        This is the fix for Bug #2: workspace/symbol returned a candidate
+        that, after request_symbol_at_location, didn't match the name_path
+        pattern — but the symbol still exists in the full tree.
+        """
+        # Full tree: the symbol we want is 'MyClass/helper'.
+        klass = _make_symbol(
+            "MyClass",
+            kind=SymbolKind.Class,
+            location={
+                "relativePath": "src/mod.ts",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 20, "character": 0},
+                },
+            },
+        )
+        method = _make_symbol(
+            "helper",
+            kind=SymbolKind.Method,
+            parent=klass,
+            location={
+                "relativePath": "src/mod.ts",
+                "range": {
+                    "start": {"line": 5, "character": 0},
+                    "end": {"line": 10, "character": 0},
+                },
+            },
+        )
+        klass["children"] = [method]
+        file_node = _make_symbol("mod", kind=SymbolKind.File, children=[klass])
+        tree = [file_node]
+
+        # workspace/symbol returns a 'helper' candidate, but after
+        # request_symbol_at_location the parent chain is wrong so
+        # compute_name_path produces something that doesn't match.
+        wrong_parent = _make_symbol("Helper", kind=SymbolKind.Function)
+        wrong_sym = _make_symbol(
+            "helper",
+            kind=SymbolKind.Function,
+            parent=wrong_parent,  # wrong parent → name_path becomes "Helper/helper"
+            location={
+                "relativePath": "src/other.ts",
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 3, "character": 0},
+                },
+            },
+        )
+
+        full_tree_called = [False]
+
+        class MockLS:
+            def __init__(self):
+                self.repository_root_path = "/fake/root"
+
+            def request_workspace_symbol(self, query):
+                return [{
+                    "name": "helper",
+                    "kind": SymbolKind.Function,
+                    "location": {
+                        "uri": "file:///fake/root/src/other.ts",
+                        "range": {
+                            "start": {"line": 1, "character": 0},
+                            "end": {"line": 3, "character": 0},
+                        },
+                    },
+                }]
+
+            def request_symbol_at_location(self, file_path, line, column):
+                return wrong_sym  # wrong parent chain
+
+            def request_full_symbol_tree(self, within_relative_path=None):
+                full_tree_called[0] = True
+                return tree
+
+        ls = MockLS()
+        result = resolve_unique_symbol_via_workspace(
+            [ls], "MyClass/helper", relative_path=None  # type: ignore[arg-type]
+        )
+        assert result["name"] == "helper"
+        assert result["kind"] == SymbolKind.Method
+        assert result["parent"] is klass
+        assert full_tree_called[0], (
+            "Full tree fallback should have been called when workspace/symbol "
+            "returned results but none matched after resolution"
+        )
+
     def test_raises_when_no_match_in_either(self):
         """When neither workspace/symbol nor full tree find the symbol, raise error."""
         empty_tree: list[UnifiedSymbolInformation] = []

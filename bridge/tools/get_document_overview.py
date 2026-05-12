@@ -44,9 +44,13 @@ def get_document_overview(params: dict[str, object], ctx: ToolContext) -> str:
 
     doc_symbols = ls.request_document_symbols(relative_path)
     imported_names: set[str] = {binding for _, binding, _ in import_pairs}
-    filtered_root_symbols = formatting.filter_imported_symbols(
-        doc_symbols.root_symbols, imported_names
-    )
+
+    if doc_symbols is None:
+        filtered_root_symbols = []
+    else:
+        filtered_root_symbols = formatting.filter_imported_symbols(
+            doc_symbols.root_symbols, imported_names
+        )
 
     symbols_text = formatting.format_overview_symbols(
         filtered_root_symbols, depth, 0, included_kinds
