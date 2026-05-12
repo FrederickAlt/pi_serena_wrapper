@@ -292,7 +292,7 @@ async function testInitShutdown(): Promise<void> {
   await client.shutdown();
 }
 
-async function testFindSymbolBasic(): Promise<void> {
+async function testFindSymbolConsolidated(): Promise<void> {
   await writeRichTypeScriptFixture();
   await writeFile(
     path.join(fixtureRoot, ".serenaproject.yml"),
@@ -300,6 +300,8 @@ async function testFindSymbolBasic(): Promise<void> {
   );
   const initResult = await client.init(fixtureRoot) as Record<string, unknown>;
   assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
+
+  // -- name_path variants (basic) --
 
   // 1. find_symbol with just name_path
   const result1 = await client.callTool("find_symbol", { name_path: "MyClass" }) as FindSymbolResult;
@@ -371,17 +373,7 @@ async function testFindSymbolBasic(): Promise<void> {
   assert(last5.kind === "None" && last5.location === "None", "sentinel kind/location should be 'None'");
   console.log(`find_symbol max_matches OK: ${syms5.length} matches, truncated=${isTruncated(result5)}`);
 
-  await client.shutdown();
-}
-
-async function testFindSymbolWithSnippet(): Promise<void> {
-  await writeRichTypeScriptFixture();
-  await writeFile(
-    path.join(fixtureRoot, ".serenaproject.yml"),
-    "languages:\n  - typescript\n",
-  );
-  const initResult = await client.init(fixtureRoot) as Record<string, unknown>;
-  assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
+  // -- code_snippet --
 
   // code_snippet (project-wide)
   const result6 = await client.callTool("find_symbol", {
@@ -413,30 +405,19 @@ async function testFindSymbolWithSnippet(): Promise<void> {
   }
   console.log(`find_symbol with code_snippet + kinds OK: ${syms8.length} matches`);
 
-  await client.shutdown();
-}
+  // -- output format --
 
-async function testFindSymbolOutputFormat(): Promise<void> {
-  await writeRichTypeScriptFixture();
-  await writeFile(
-    path.join(fixtureRoot, ".serenaproject.yml"),
-    "languages:\n  - typescript\n",
-  );
-  const initResult = await client.init(fixtureRoot) as Record<string, unknown>;
-  assert(initResult.ok === true, `Init should succeed: ${JSON.stringify(initResult)}`);
-
-  const result = await client.callTool("find_symbol", { name_path: "MyClass" }) as FindSymbolResult;
-  assert(Array.isArray(result), "result should be an array");
-  assert(!isTruncated(result), "should not be truncated for 1-class fixture");
-  const syms = stripSentinel(result);
-  for (const sym of syms) {
+  const result9 = await client.callTool("find_symbol", { name_path: "MyClass" }) as FindSymbolResult;
+  assert(Array.isArray(result9), "result should be an array");
+  assert(!isTruncated(result9), "should not be truncated for 1-class fixture");
+  const syms9 = stripSentinel(result9);
+  for (const sym of syms9) {
     assert(typeof sym.name_path === "string", "name_path should be string");
     assert(typeof sym.kind === "string", "kind should be string");
     assert(typeof sym.location === "string", "location should be string");
     assert(/^.+:\d+-\d+$/.test(sym.location), `location should match path:start-end, got ${sym.location}`);
   }
-  // Verify sentinel format when it does appear (tested separately in max_matches)
-  console.log(`find_symbol output format OK: ${syms.length} symbols`);
+  console.log(`find_symbol output format OK: ${syms9.length} symbols`);
 
   await client.shutdown();
 }
@@ -1504,14 +1485,8 @@ async function run(): Promise<void> {
   console.log("=== Init/Shutdown (Issue #1) ===");
   await testInitShutdown();
 
-  console.log("\n=== find_symbol basic (Issue #3) ===");
-  await testFindSymbolBasic();
-
-  console.log("\n=== find_symbol with code_snippet (Issue #3) ===");
-  await testFindSymbolWithSnippet();
-
-  console.log("\n=== find_symbol output format (Issue #3) ===");
-  await testFindSymbolOutputFormat();
+  console.log("\n=== find_symbol (Issue #3) ===");
+  await testFindSymbolConsolidated();
 
   console.log("\n=== get_type (Issue #5) ===");
   await testGetType();
