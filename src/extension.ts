@@ -1,6 +1,17 @@
-import type { ExtensionAPI, AgentToolResult } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, AgentToolResult, ToolRenderContext } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { SerenaBridgeClient, SerenaError } from "./bridge-client.js";
 import { toolSchemas, toolDescriptions, type SerenaToolName } from "./schemas.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function str(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "???";
+  return String(value);
+}
 
 // ---------------------------------------------------------------------------
 // Tool registry — single source of truth for registration
@@ -10,6 +21,7 @@ interface ToolEntry {
   name: SerenaToolName;
   label: string;
   guidelines?: string[];
+  renderCall?: (args: Record<string, unknown>, theme: any, context: ToolRenderContext<any, any>) => any;
 }
 
 type ExecuteFn = (
@@ -28,6 +40,16 @@ const TOOLS: (ToolEntry & { execute: ExecuteFn })[] = [
       "Strip or skip this sentinel when processing results. Its presence means more symbols exist than were returned.",
     ],
     execute: stdCallTool("find_symbol"),
+    renderCall(args, theme, context) {
+      const text = context.lastComponent ?? new Text("", 0, 0);
+      let line = theme.fg("toolTitle", theme.bold("find_symbol")) + " " + theme.fg("accent", str(args.name_path));
+      if (args.relative_path) line += theme.fg("toolOutput", " in ") + theme.fg("accent", str(args.relative_path));
+      if (args.kinds) line += theme.fg("toolOutput", " kinds:") + theme.fg("accent", JSON.stringify(args.kinds));
+      if (args.code_snippet) line += theme.fg("toolOutput", " snippet:") + theme.fg("accent", JSON.stringify(args.code_snippet));
+      if (args.max_matches !== undefined) line += theme.fg("toolOutput", ` max:${args.max_matches}`);
+      text.setText(line);
+      return text;
+    },
   },
   {
     name: "get_document_overview",
@@ -43,6 +65,14 @@ const TOOLS: (ToolEntry & { execute: ExecuteFn })[] = [
       "For languages without import parser support (non-TS/Python), the Imports section is omitted but Symbols still work.",
     ],
     execute: stdTextCallTool("get_document_overview"),
+    renderCall(args, theme, context) {
+      const text = context.lastComponent ?? new Text("", 0, 0);
+      let line = theme.fg("toolTitle", theme.bold("get_document_overview")) + " " + theme.fg("accent", str(args.relative_path));
+      if (args.depth !== undefined && args.depth !== 0) line += theme.fg("toolOutput", ` depth:${args.depth}`);
+      if (args.kinds) line += theme.fg("toolOutput", " kinds:") + theme.fg("accent", JSON.stringify(args.kinds));
+      text.setText(line);
+      return text;
+    },
   },
   {
     name: "get_type",
@@ -55,6 +85,13 @@ const TOOLS: (ToolEntry & { execute: ExecuteFn })[] = [
       "The result is a compact symbol dict with name_path, kind, and location.",
     ],
     execute: stdCallTool("get_type"),
+    renderCall(args, theme, context) {
+      const text = context.lastComponent ?? new Text("", 0, 0);
+      let line = theme.fg("toolTitle", theme.bold("get_type")) + " " + theme.fg("accent", str(args.name_path));
+      if (args.relative_path) line += theme.fg("toolOutput", " in ") + theme.fg("accent", str(args.relative_path));
+      text.setText(line);
+      return text;
+    },
   },
   {
     name: "get_references",
@@ -66,6 +103,13 @@ const TOOLS: (ToolEntry & { execute: ExecuteFn })[] = [
       "Each result includes referrer (enclosing scope), kind, and location (file:startLine-endLine).",
     ],
     execute: stdCallTool("get_references"),
+    renderCall(args, theme, context) {
+      const text = context.lastComponent ?? new Text("", 0, 0);
+      let line = theme.fg("toolTitle", theme.bold("get_references")) + " " + theme.fg("accent", str(args.name_path));
+      if (args.relative_path) line += theme.fg("toolOutput", " in ") + theme.fg("accent", str(args.relative_path));
+      text.setText(line);
+      return text;
+    },
   },
   {
     name: "get_implementations",
@@ -75,6 +119,13 @@ const TOOLS: (ToolEntry & { execute: ExecuteFn })[] = [
       "Provide `name_path` (required) to identify the symbol. Optionally pass `relative_path` to narrow which file/directory to search for the symbol definition. Implementation results are always project-wide.",
     ],
     execute: stdCallTool("get_implementations"),
+    renderCall(args, theme, context) {
+      const text = context.lastComponent ?? new Text("", 0, 0);
+      let line = theme.fg("toolTitle", theme.bold("get_implementations")) + " " + theme.fg("accent", str(args.name_path));
+      if (args.relative_path) line += theme.fg("toolOutput", " in ") + theme.fg("accent", str(args.relative_path));
+      text.setText(line);
+      return text;
+    },
   },
   {
     name: "get_docstring",
@@ -85,6 +136,13 @@ const TOOLS: (ToolEntry & { execute: ExecuteFn })[] = [
       "Returns a plain string with the hover content, or 'No docstring available.'.",
     ],
     execute: stdCallTool("get_docstring"),
+    renderCall(args, theme, context) {
+      const text = context.lastComponent ?? new Text("", 0, 0);
+      let line = theme.fg("toolTitle", theme.bold("get_docstring")) + " " + theme.fg("accent", str(args.name_path));
+      if (args.relative_path) line += theme.fg("toolOutput", " in ") + theme.fg("accent", str(args.relative_path));
+      text.setText(line);
+      return text;
+    },
   },
   {
     name: "rename_symbol",
@@ -95,6 +153,14 @@ const TOOLS: (ToolEntry & { execute: ExecuteFn })[] = [
       "The rename applies only the edits returned by the language server; some servers may not propagate renames to import sites in other files.",
     ],
     execute: stdCallTool("rename_symbol"),
+    renderCall(args, theme, context) {
+      const text = context.lastComponent ?? new Text("", 0, 0);
+      let line = theme.fg("toolTitle", theme.bold("rename_symbol")) + " " + theme.fg("accent", str(args.name_path));
+      line += theme.fg("toolOutput", " → ") + theme.fg("accent", str(args.new_name));
+      if (args.relative_path) line += theme.fg("toolOutput", " in ") + theme.fg("accent", str(args.relative_path));
+      text.setText(line);
+      return text;
+    },
   },
   {
     name: "restart_lsp",
@@ -105,6 +171,11 @@ const TOOLS: (ToolEntry & { execute: ExecuteFn })[] = [
         content: [{ type: "text", text: JSON.stringify(result) }],
         details: result,
       };
+    },
+    renderCall(args, theme, context) {
+      const text = context.lastComponent ?? new Text("", 0, 0);
+      text.setText(theme.fg("toolTitle", theme.bold("restart_lsp")) + " " + theme.fg("accent", str(args.cwd)));
+      return text;
     },
   },
 ];
@@ -177,6 +248,7 @@ export default function (pi: ExtensionAPI) {
       description: toolDescriptions[tool.name],
       parameters: toolSchemas[tool.name],
       promptGuidelines: tool.guidelines,
+      renderCall: tool.renderCall,
       execute: async (_toolCallId, params, signal) => {
         return tool.execute(params as Record<string, unknown>, signal, clientFor());
       },
