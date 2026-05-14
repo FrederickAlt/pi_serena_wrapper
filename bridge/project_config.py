@@ -28,8 +28,6 @@ DEFAULT_DOCUMENT_OVERVIEW_KINDS: frozenset[int] = frozenset({
     SymbolKind.Enum,          # 10
     SymbolKind.Interface,     # 11
     SymbolKind.Function,      # 12
-    SymbolKind.Constant,      # 14
-    SymbolKind.EnumMember,    # 22
     SymbolKind.Struct,        # 23
     SymbolKind.Event,         # 24
     SymbolKind.TypeParameter, # 26
