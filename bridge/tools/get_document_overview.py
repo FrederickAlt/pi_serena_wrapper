@@ -6,6 +6,7 @@ import formatting
 import import_resolver
 from import_parser import parse_imports
 from path_validation import validate_project_path
+from solidlsp.ls_types import SymbolKind
 from tool_context import ToolContext
 
 
@@ -52,9 +53,31 @@ def get_document_overview(params: dict[str, object], ctx: ToolContext) -> str:
             doc_symbols.root_symbols, imported_names
         )
 
-    symbols_text = formatting.format_overview_symbols(
+    # Flatten, truncate, and format symbols.
+    max_matches = int(params.get("max_matches", -1))
+    flattened = formatting.flatten_tree_filtered(
         filtered_root_symbols, depth, 0, included_kinds
     )
+
+    truncated = False
+    if max_matches > 0 and len(flattened) > max_matches:
+        truncated = True
+        flattened = flattened[:max_matches]
+
+    symbol_lines: list[str] = []
+    for d, sym in flattened:
+        indent = "  " * d
+        kind_name = SymbolKind(sym["kind"]).name
+        name = sym["name"]
+        rng = sym.get("range") or {}
+        start_line = rng.get("start", {}).get("line", 0) + 1
+        end_line = rng.get("end", {}).get("line", 0) + 1
+        symbol_lines.append(f"{indent}{kind_name} {name}:{start_line}-{end_line}")
+
+    if truncated:
+        symbol_lines.append("...")
+
+    symbols_text = "\n".join(symbol_lines)
     sections.append("## Symbols")
     sections.append(symbols_text)
 

@@ -159,6 +159,10 @@
             "type": "array",
             "items": { "type": ["number", "string"] },
             "description": "LSP SymbolKind names (e.g. 'Class', 'Method') or integer values to include. Defaults to structural kinds only: Module, Namespace, Class, Method, Constructor, Enum, Interface, Function, Constant, EnumMember, Struct, Event, TypeParameter. Pass an empty array to disable filtering."
+          },
+          "max_matches": {
+            "type": "number",
+            "description": "Maximum number of symbols to show. Default is unlimited (all symbols). When exceeded, symbols are truncated and '...' is appended to the Symbols section."
           }
         },
         "required": ["relative_path"],

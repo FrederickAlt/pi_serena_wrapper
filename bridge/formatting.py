@@ -107,6 +107,33 @@ def parse_kinds(raw_kinds: list[object] | None) -> set[int] | None:
     return result
 
 
+def flatten_tree_filtered(
+    symbols: list[UnifiedSymbolInformation],
+    max_depth: int,
+    current_depth: int = 0,
+    included_kinds: set[int] | None = None,
+) -> list[tuple[int, UnifiedSymbolInformation]]:
+    """Flatten symbol tree into (depth, symbol) pairs, respecting max_depth and kinds filter.
+
+    Pre-order traversal.  Symbols excluded by the kinds filter are skipped
+    along with their entire subtree.
+    """
+    result: list[tuple[int, UnifiedSymbolInformation]] = []
+    for sym in symbols:
+        if included_kinds is not None and sym["kind"] not in included_kinds:
+            continue
+        result.append((current_depth, sym))
+        if current_depth < max_depth:
+            children = sym.get("children", [])
+            if children:
+                result.extend(
+                    flatten_tree_filtered(
+                        children, max_depth, current_depth + 1, included_kinds
+                    )
+                )
+    return result
+
+
 def filter_imported_symbols(
     symbols: list[UnifiedSymbolInformation],
     imported_names: set[str],

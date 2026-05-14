@@ -102,6 +102,7 @@ export const toolSchemas = {
     relative_path: RelativePath,
     depth: Type.Optional(Type.Number({ description: "Descendant nesting depth for the symbols tree. Default 0 (top-level only)." })),
     kinds: KindList,
+    max_matches: Type.Optional(Type.Number({ description: "Maximum number of symbols to show. Default is unlimited. When exceeded, symbols are truncated and '...' is appended." })),
   }),
 } as const;
 

@@ -91,6 +91,8 @@ Examples:
                           help="Path to a source file, relative to project root.")
     overview.add_argument("--depth", type=int, default=0,
                           help="Descendant nesting depth for symbols. Default: 0.")
+    overview.add_argument("--max-matches", type=int, default=-1,
+                          help="Maximum symbols to show (-1 = unlimited). Default: unlimited.")
 
     # -- get_type -----------------------------------------------------------
 
