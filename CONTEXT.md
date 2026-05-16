@@ -49,6 +49,18 @@
    v1 supports TypeScript/TSX and Python import parsing. Other languages omit the
    imports section.
 
+## overview entry
+
+   A rendered declaration row in the `## Symbols` section, selected by the overview's `category`, `depth`, and visibility rules.
+
+## shape preview
+
+   A compact, bounded source-derived summary nested under a structural overview entry, such as interface fields, enum members, a type alias shape, or a compact class member list.
+
+## category
+
+   A language-neutral filter label for overview entries, such as `function`, `class`, `type`, or `constant`; it is not a raw Tree-sitter node type or an LSP `SymbolKind`.
+
 ## Flagged ambiguities
 
 ## SolidLSP
